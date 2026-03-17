@@ -1,0 +1,17 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 后端数据与上传
+wechat-backend/data/
+wechat-backend/uploads/
+wechat-backend/exports/
+
+# 前端依赖与构建
+wechat-h5/node_modules/
+wechat-h5/dist/
+
+# 编辑器与环境
+.vscode/
+.env
+.DS_Store
