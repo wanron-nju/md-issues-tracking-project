@@ -1,0 +1,15 @@
+# --- 后端忽略 ---
+wechat-backend/__pycache__/
+wechat-backend/data/
+wechat-backend/uploads/
+wechat-backend/exports/
+wechat-backend/venv/
+
+# --- 前端忽略 ---
+wechat-h5/node_modules/
+wechat-h5/dist/
+wechat-h5/.vite/
+
+# --- 系统忽略 ---
+.vscode/
+.env
