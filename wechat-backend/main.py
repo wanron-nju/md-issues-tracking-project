@@ -72,7 +72,7 @@ app.add_middleware(
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 
-def _compress_image(
+def _compress_and_watermark(
     input_bytes: bytes,
     watermark_type: str = None,
     store_name: str = None,
@@ -80,10 +80,10 @@ def _compress_image(
     timestamp: str = None,
 ) -> bytes:
     """
-    Optimized image compression using a two-step approach:
-    1. Downscale: If over 1MB, resize so longest side is 2000px
-    2. Smart Compression: Save as JPEG quality 80 with optimize.
-       If still over 1MB, do ONE more save at quality 60 (floor).
+    Image processing pipeline:
+    1. Always resize first (to max 1920px on longest side)
+    2. Apply watermark AFTER resize (watermark proportional to final size)
+    3. Compress to JPEG quality 80
     
     If watermark parameters are provided, applies watermark AFTER resize but BEFORE compression.
     
@@ -91,30 +91,14 @@ def _compress_image(
     
     Returns compressed image bytes (JPEG format).
     """
-    SIZE_THRESHOLD = 1024 * 1024  # 1MB
-    
-    # Step 0: Check initial size - if already under threshold, return original as JPEG
-    if len(input_bytes) <= SIZE_THRESHOLD:
-        # Convert to JPEG anyway for consistency
-        img = Image.open(io.BytesIO(input_bytes))
-        if img.mode not in ('RGB', 'L'):
-            img = img.convert('RGB')
-        
-        # Apply watermark if parameters provided (for small files)
-        if watermark_type and store_name and issue_id is not None and timestamp:
-            img = _add_watermark(img, watermark_type, store_name, issue_id, timestamp)
-        
-        output = io.BytesIO()
-        img.save(output, format='JPEG', quality=85, optimize=True)
-        return output.getvalue()
-    
-    # Step 1: Downscale if over 1MB
+    # Step 1: Always resize first (regardless of original size)
+    # This ensures watermark is proportional to final output
     img = Image.open(io.BytesIO(input_bytes))
     if img.mode not in ('RGB', 'L'):
         img = img.convert('RGB')
     
     width, height = img.size
-    LONG_SIDE = 2000
+    LONG_SIDE = 1920  # Target max dimension
     
     if width > LONG_SIDE or height > LONG_SIDE:
         if width > height:
@@ -125,21 +109,17 @@ def _compress_image(
             new_width = int(LONG_SIDE * width / height)
         
         img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Update dimensions for watermark calculation
+        width, height = img.size
     
-    # Apply watermark AFTER resize but BEFORE compression (if parameters provided)
+    # Step 2: Apply watermark AFTER resize (watermark sized for final dimensions)
     if watermark_type and store_name and issue_id is not None and timestamp:
         img = _add_watermark(img, watermark_type, store_name, issue_id, timestamp)
     
-    # Step 2: Save as JPEG with quality=80 and optimize=True
+    # Step 3: Compress to JPEG
     output = io.BytesIO()
     img.save(output, format='JPEG', quality=80, optimize=True)
     compressed = output.getvalue()
-    
-    # If still over 1MB, do ONE more save at quality=60 (floor)
-    if len(compressed) > SIZE_THRESHOLD:
-        output = io.BytesIO()
-        img.save(output, format='JPEG', quality=60, optimize=True)
-        compressed = output.getvalue()
     
     return compressed
 
@@ -153,44 +133,27 @@ async def _save_upload_with_compression(
     timestamp: str = None,
 ) -> None:
     """
-    Read uploaded file, compress if needed, and save to dest_path.
+    Read uploaded file, resize, watermark if needed, and save to dest_path.
     Handles both 'issue_photo' and 'fix_photo' uploads.
     
-    Performance optimization:
-    - For images under 1MB: bypass all processing and save original file as-is
-    - For images over 1MB: apply two-step compression (downscale + smart compression)
-    
-    If watermark parameters are provided, applies watermark AFTER resize but BEFORE compression.
+    Pipeline:
+    1. Read uploaded file
+    2. Resize to max 1920px on longest side
+    3. Apply watermark (if parameters provided)
+    4. Compress to JPEG quality 80
     
     If Pillow fails to open a corrupted file, logs error and raises HTTPException(400).
     """
     import logging
     
     logger = logging.getLogger(__name__)
-    SIZE_THRESHOLD = 1024 * 1024  # 1MB
     
     try:
         # Read the uploaded file into memory
         input_bytes = upload_file.file.read()
         
-        # Check if file is small enough to skip compression - save original as-is
-        if len(input_bytes) <= SIZE_THRESHOLD:
-            # Even for small files, apply watermark if provided
-            if watermark_type and store_name and issue_id is not None and timestamp:
-                img = Image.open(io.BytesIO(input_bytes))
-                if img.mode not in ('RGB', 'L'):
-                    img = img.convert('RGB')
-                img = _add_watermark(img, watermark_type, store_name, issue_id, timestamp)
-                output = io.BytesIO()
-                img.save(output, format='JPEG', quality=85, optimize=True)
-                input_bytes = output.getvalue()
-            
-            with dest_path.open("wb") as f:
-                f.write(input_bytes)
-            return
-        
-        # File is over 1MB - compress it using two-step approach
-        compressed = _compress_image(
+        # Process image: resize + watermark + compress
+        processed = _compress_and_watermark(
             input_bytes,
             watermark_type=watermark_type,
             store_name=store_name,
@@ -198,12 +161,12 @@ async def _save_upload_with_compression(
             timestamp=timestamp,
         )
         
-        # Save the compressed result
+        # Save the processed result
         with dest_path.open("wb") as f:
-            f.write(compressed)
+            f.write(processed)
             
     except Exception as e:
-        logger.error(f"Image compression failed for {upload_file.filename}: {e}")
+        logger.error(f"Image processing failed for {upload_file.filename}: {e}")
         raise HTTPException(
             status_code=400,
             detail=f"Cannot process image: {upload_file.filename}. The file may be corrupted."
@@ -484,15 +447,20 @@ def _add_watermark(
     timestamp: str,
 ) -> Image.Image:
     """
-    Add a text watermark to the image.
+    Add a text watermark to the image with enhanced visibility.
     
     Watermark content:
     - Issue Photo: "问题照片 - [门店名称] - [问题编号] - [上传时间]"
     - Rectification Photo: "整改照片 - [门店名称] - [问题编号] - [整改时间]"
     
+    Features:
+    - Dynamic font sizing based on image width (width // 25, min 40)
+    - Dynamic outline thickness (font_size // 10, min 1)
+    - Robust black outline effect (8-direction stroke)
+    - Positioned in bottom-right corner with adequate padding
+    - Uses WQY MicroHei font for proper CJK character support
+    
     Store name should only contain the Chinese part (discard digits and "-").
-    Position: Bottom-right corner with a small margin.
-    Text: Semi-transparent white with thin black outline.
     """
     # Extract Chinese store name (remove digits and "-")
     # e.g., "1001 - 明都店" -> "明都店"
@@ -512,17 +480,22 @@ def _add_watermark(
     except ImportError:
         return img  # Return original if PIL modules not available
     
-    draw = ImageDraw.Draw(img)
-    
     # Get image dimensions
     width, height = img.size
     
-    # Calculate font size (approximately 2% of image height, min 12, max 48)
-    font_size = max(12, min(48, int(height * 0.02)))
+    # Dynamic font sizing: font_size = image_width // 25, min 40
+    font_size = max(40, width // 25)
+    
+    # Dynamic thickness: thickness = font_size // 10, min 1
+    thickness = max(1, font_size // 10)
     
     # Try to load a font that supports Chinese characters
-    # Try common Windows fonts that support Chinese
+    # Priority: Ubuntu WQY font -> Windows fonts -> fallback
     font_paths = [
+        # Ubuntu/Linux font (WQY MicroHei - supports CJK)
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        # Windows fonts
         "C:/Windows/Fonts/msyh.ttc",   # Microsoft YaHei
         "C:/Windows/Fonts/simhei.ttf", # SimHei
         "C:/Windows/Fonts/simsun.ttc", # SimSun
@@ -533,22 +506,31 @@ def _add_watermark(
     for font_path in font_paths:
         try:
             font = ImageFont.truetype(font_path, font_size)
+            print(f"DEBUG: Loaded font: {font_path}")
             break
-        except (OSError, IOError):
+        except (OSError, IOError) as e:
+            print(f"DEBUG: Failed to load font {font_path}: {e}")
             continue
     
-    # Use default font if no Chinese font found
+    # Use default font if no CJK font found
     if font is None:
+        print("DEBUG: No CJK font found, using default font")
         try:
             font = ImageFont.load_default()
-            # Scale up default font if needed
-            font_size = max(12, min(48, int(height * 0.02)))
         except Exception:
             font = ImageFont.load_default()
     
-    # Get text bounding box
+    # Ensure image is in RGBA mode for transparency support
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+    
+    # Create overlay for text rendering
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    
+    # Get text bounding box for accurate positioning
     try:
-        bbox = draw.textbbox((0, 0), watermark_text, font=font)
+        bbox = overlay_draw.textbbox((0, 0), watermark_text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
     except Exception:
@@ -556,58 +538,34 @@ def _add_watermark(
         text_width = len(watermark_text) * font_size * 0.6
         text_height = font_size
     
-    # Position: bottom-right corner with margin (5% of image size)
-    margin = int(min(width, height) * 0.05)
-    x = width - text_width - margin
-    y = height - text_height - margin
+    # Dynamic padding based on font size
+    padding = font_size
     
-    # Ensure x and y are not negative
-    x = max(margin // 2, x)
-    y = max(margin // 2, y)
+    # Position: bottom-right corner with dynamic padding
+    x = width - text_width - padding
+    y = height - text_height - padding
     
-    # Draw black outline (stroke)
-    outline_width = 2
-    for adj_x in range(-outline_width, outline_width + 1):
-        for adj_y in range(-outline_width, outline_width + 1):
+    # Ensure x and y are not negative (keep at least padding distance from edges)
+    x = max(padding, x)
+    y = max(padding, y)
+    
+    # Draw robust black outline (8-direction stroke)
+    # This creates a solid "hull" around the text for clear visibility on any background
+    for adj_x in range(-thickness, thickness + 1):
+        for adj_y in range(-thickness, thickness + 1):
+            # Skip the center position (where we draw the white text)
             if adj_x == 0 and adj_y == 0:
                 continue
-            draw.text((x + adj_x, y + adj_y), watermark_text, fill="black", font=font)
+            overlay_draw.text((x + adj_x, y + adj_y), watermark_text, fill=(0, 0, 0, 255), font=font)
     
-    # Draw white text with transparency
-    # PIL doesn't support alpha directly in fill, so we use a workaround
-    # by creating an overlay
-    try:
-        # Try to use RGBA mode for transparency
-        if img.mode != 'RGBA':
-            img = img.convert('RGBA')
-        
-        # Create overlay for text
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        
-        # Draw outline on overlay
-        for adj_x in range(-outline_width, outline_width + 1):
-            for adj_y in range(-outline_width, outline_width + 1):
-                if adj_x == 0 and adj_y == 0:
-                    continue
-                overlay_draw.text((x + adj_x, y + adj_y), watermark_text, fill=(0, 0, 0, 255), font=font)
-        
-        # Draw white text on overlay (semi-transparent)
-        overlay_draw.text((x, y), watermark_text, fill=(255, 255, 255, 220), font=font)
-        
-        # Composite overlay onto image
-        img = Image.alpha_composite(img, overlay)
-        
-        # Convert back to RGB for JPEG saving
-        img = img.convert('RGB')
-    except Exception as e:
-        # Fallback: just draw white text with black outline directly
-        try:
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            draw.text((x, y), watermark_text, fill="white", font=font)
-        except Exception:
-            pass  # Give up on watermark if it fails
+    # Draw white text precisely on top in the center
+    overlay_draw.text((x, y), watermark_text, fill=(255, 255, 255, 255), font=font)
+    
+    # Composite overlay onto image
+    img = Image.alpha_composite(img, overlay)
+    
+    # Convert back to RGB for JPEG saving
+    img = img.convert('RGB')
     
     return img
 

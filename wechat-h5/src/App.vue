@@ -105,6 +105,12 @@ const trackingStatus = ref('待整改')
 const trackingStatusPicker = ref(false)
 const trackingStore = ref(STORE_ALL)
 const trackingStorePicker = ref(false)
+
+// Computed property for display text of tracking store
+const trackingStoreDisplay = computed({
+  get: () => trackingStore.value === STORE_ALL ? '全部门店' : trackingStore.value,
+  set: (v) => { trackingStore.value = v }
+})
 const trackingStartDate = ref('')
 const trackingEndDate = ref('')
 const showStartDatePicker = ref(false)
@@ -789,7 +795,7 @@ const handleSubmit = async () => {
             />
 
             <van-field
-              v-model="trackingStore"
+              v-model="trackingStoreDisplay"
               label="门店"
               readonly
               is-link
