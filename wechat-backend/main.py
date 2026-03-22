@@ -7,13 +7,14 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 import pandas as pd
 from PIL import Image
 import xlsxwriter
@@ -59,6 +60,9 @@ STORES: list[str] = [
     "1059 - 怀德店",
 ]
 
+# Unassigned owner placeholder
+UNASSIGNED_OWNER = "<由营运组分派>"
+
 app = FastAPI()
 
 app.add_middleware(
@@ -70,6 +74,52 @@ app.add_middleware(
 )
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+
+# ============ Pydantic Schemas ============
+
+class IssueCreate(BaseModel):
+    submit_date: str = Field(..., description="Submission date (YYYY-MM-DD or YYYY-MM-DD HH:mm:ss)")
+    store: str = Field(..., description="Store name")
+    content: str = Field(..., description="Issue description")
+    issue_owner: str = Field(..., description="Owner of the issue (who is responsible)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "submit_date": "2024-01-15",
+                "store": "1001 - 明都店",
+                "content": "商品摆放不规范",
+                "issue_owner": "门店"
+            }
+        }
+
+
+class IssueOut(BaseModel):
+    id: int
+    submitted_at: Optional[str] = None
+    store: str
+    content: str
+    issue_photo_url: Optional[str] = None
+    issue_owner: str
+    fix_photo_url: Optional[str] = None
+    fix_comments: Optional[str] = None
+    fix_date: Optional[str] = None
+    status: str
+    
+    class Config:
+        from_attributes = True
+
+
+class RectificationSubmit(BaseModel):
+    """Schema for rectification submission"""
+    ids: list[int] = Field(..., description="List of issue IDs")
+    fix_comments: Optional[list[str]] = Field(default=None, description="List of fix comments (optional, one per issue)")
+
+
+class AssignmentRequest(BaseModel):
+    """Schema for assignment submission"""
+    assignments: list[dict] = Field(..., description="List of assignments, each containing 'id' and 'issue_owner'")
 
 
 def _compress_and_watermark(
@@ -250,10 +300,15 @@ async def submit_issue(
     store: str = Form(...),
     content: str = Form(...),
     issue_photo: UploadFile = File(...),
+    issue_owner: str = Form(...),
     db: Session = Depends(get_db),
 ):
     if store not in STORES:
         raise HTTPException(status_code=400, detail=f"Invalid store: {store}")
+
+    # Validate issue_owner is not blank
+    if not issue_owner or not issue_owner.strip():
+        raise HTTPException(status_code=400, detail="issue_owner cannot be blank")
 
     if not issue_photo.filename:
         raise HTTPException(status_code=400, detail="issue_photo filename is missing")
@@ -275,6 +330,7 @@ async def submit_issue(
         store=store,
         content=content,
         issue_photo="",  # Temporary, will update later
+        issue_owner=issue_owner.strip(),
         status="pending",
     )
 
@@ -331,25 +387,39 @@ async def submit_issue(
         "store": issue.store,
         "content": issue.content,
         "issue_photo_url": issue.issue_photo,
+        "issue_owner": issue.issue_owner,
         "status": issue.status,
     }
 
 
 @app.get("/issues/pending")
-def get_pending_issues_by_store(store: str, db: Session = Depends(get_db)):
-    if store not in STORES:
+def get_pending_issues_by_store(
+    store: Optional[str] = None,
+    owner: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    # Validate store if provided
+    if store and store not in STORES:
         raise HTTPException(status_code=400, detail=f"Invalid store: {store}")
     
-    # Extract store code prefix (e.g., "1077" from "1077 - 礼河店")
-    store_prefix = store.split(" - ")[0] if " - " in store else store
-        
-    issues = (
+    query = (
         db.query(Issue)
-        .filter(Issue.store.like(f"{store_prefix}%"))
         .filter(Issue.fix_photo.is_(None))
-        .order_by(Issue.id.desc())
-        .all()
     )
+    
+    # Optional store filter - if provided, filter by store prefix
+    if store and store.strip():
+        store_prefix = store.split(" - ")[0] if " - " in store else store
+        query = query.filter(Issue.store.like(f"{store_prefix}%"))
+    
+    # Required owner filter (must be provided)
+    if owner and owner.strip():
+        query = query.filter(Issue.issue_owner == owner.strip())
+    else:
+        # If no owner filter, return empty or could raise error
+        raise HTTPException(status_code=400, detail="owner parameter is required")
+    
+    issues = query.order_by(Issue.id.desc()).all()
 
     return [
         {
@@ -358,6 +428,58 @@ def get_pending_issues_by_store(store: str, db: Session = Depends(get_db)):
             "store": issue.store,
             "content": issue.content,
             "issue_photo_url": issue.issue_photo,
+            "issue_owner": issue.issue_owner,
+            "fix_comments": issue.fix_comments,
+            "status": issue.status,
+        }
+        for issue in issues
+    ]
+
+
+@app.get("/api/issues/unassigned")
+def get_unassigned_issues(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all issues where issue_owner == '<由营运组分派>' and status == 'pending'.
+    Supports optional date filter for submitted_at field.
+    """
+    query = (
+        db.query(Issue)
+        .filter(Issue.issue_owner == UNASSIGNED_OWNER)
+        .filter(Issue.status == "pending")
+    )
+    
+    # Filter by start_date
+    if start_date and start_date.strip():
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            query = query.filter(Issue.submitted_at >= start_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+
+    # Filter by end_date (on or before)
+    if end_date and end_date.strip():
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            # Include the entire end date (up to 23:59:59)
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+            query = query.filter(Issue.submitted_at <= end_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+    issues = query.order_by(Issue.submitted_at.desc()).all()
+
+    return [
+        {
+            "id": issue.id,
+            "submitted_at": issue.submitted_at.strftime("%Y-%m-%d %H:%M") if issue.submitted_at else None,
+            "store": issue.store,
+            "content": issue.content,
+            "issue_photo_url": issue.issue_photo,
+            "issue_owner": issue.issue_owner,
             "status": issue.status,
         }
         for issue in issues
@@ -368,13 +490,40 @@ def get_pending_issues_by_store(store: str, db: Session = Depends(get_db)):
 async def submit_rectifications(
     request: Request,
     ids: list[int] = Form(...),
-    fix_photos: list[UploadFile] = File(...),
+    fix_photos: list[UploadFile] = File(default=[]),
+    fix_comments: Optional[str] = Form(default=None),
     db: Session = Depends(get_db),
 ):
-    if len(ids) != len(fix_photos):
+    """
+    Submit rectifications for issues.
+    
+    - fix_comments is an optional JSON string containing a list of comments (one per issue)
+    - fix_photos is an optional list of photos (can be empty for comment-only updates)
+    - Both can be updated independently
+    """
+    # Parse fix_comments if provided
+    comments_list = None
+    if fix_comments and fix_comments.strip():
+        import json
+        try:
+            comments_list = json.loads(fix_comments)
+            if not isinstance(comments_list, list):
+                raise ValueError("fix_comments must be a JSON array")
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON in fix_comments: {e}")
+    
+    # If photos are provided, their count must match ids
+    if len(fix_photos) > 0 and len(ids) != len(fix_photos):
         raise HTTPException(
             status_code=400, 
             detail=f"Mismatched data: {len(ids)} IDs and {len(fix_photos)} photos"
+        )
+    
+    # If comments are provided, their count must match ids (if provided)
+    if comments_list and len(ids) != len(comments_list):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Mismatched data: {len(ids)} IDs and {len(comments_list)} comments"
         )
 
     updated_data = []
@@ -382,46 +531,56 @@ async def submit_rectifications(
     saved_files: list[Path] = []
 
     try:
-        for issue_id, upload in zip(ids, fix_photos):
-            if not upload.filename:
-                continue
-
+        for idx, issue_id in enumerate(ids):
             issue = db.query(Issue).filter(Issue.id == issue_id).first()
             if not issue:
                 continue
+            
+            # Handle fix_photo update
+            fix_photo_url = None
+            if idx < len(fix_photos) and fix_photos[idx] and fix_photos[idx].filename:
+                upload = fix_photos[idx]
+                
+                filename = _unique_upload_filename("fix", issue.store, upload.filename)
+                filename = str(Path(filename).with_suffix('.jpg'))
+                dest_path = UPLOADS_DIR / filename
 
-            filename = _unique_upload_filename("fix", issue.store, upload.filename)
-            # Ensure .jpg extension for compressed JPEG
-            filename = str(Path(filename).with_suffix('.jpg'))
-            dest_path = UPLOADS_DIR / filename
+                fix_timestamp = now.strftime("%Y-%m-%d %H:%M")
 
-            # Format timestamp for watermark
-            fix_timestamp = now.strftime("%Y-%m-%d %H:%M")
+                try:
+                    await _save_upload_with_compression(
+                        upload,
+                        dest_path,
+                        watermark_type="fix",
+                        store_name=issue.store,
+                        issue_id=issue.id,
+                        timestamp=fix_timestamp,
+                    )
+                    saved_files.append(dest_path)
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Failed to save file for issue {issue_id}") from e
 
-            try:
-                await _save_upload_with_compression(
-                    upload,
-                    dest_path,
-                    watermark_type="fix",
-                    store_name=issue.store,
-                    issue_id=issue.id,
-                    timestamp=fix_timestamp,
-                )
-                saved_files.append(dest_path)
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to save file for issue {issue_id}") from e
-
-            fix_photo_url = _get_photo_url(filename)
-            issue.fix_photo = fix_photo_url
-            issue.fix_date = now
-            issue.status = "completed"
+                fix_photo_url = _get_photo_url(filename)
+                issue.fix_photo = fix_photo_url
+                issue.fix_date = now
+                issue.status = "completed"
+            
+            # Handle fix_comments update independently
+            if comments_list and idx < len(comments_list):
+                issue.fix_comments = comments_list[idx]
+            
+            # If both photo and comments were updated, or if only one is updated
+            # Mark as completed if photo is provided (even without comments)
+            if fix_photo_url:
+                issue.status = "completed"
 
             updated_data.append({
                 "id": issue.id,
                 "fix_photo_url": issue.fix_photo,
-                "fix_date": issue.fix_date.isoformat(),
+                "fix_comments": issue.fix_comments,
+                "fix_date": issue.fix_date.isoformat() if issue.fix_date else None,
                 "status": issue.status,
             })
 
@@ -687,6 +846,7 @@ def export_issues(
     status: str = "all",
     start_date: str = None,
     end_date: str = None,
+    owner: str = None,
     db: Session = Depends(get_db),
 ):
     # Housekeeping: Clean up old exports (>10 minutes)
@@ -699,6 +859,10 @@ def export_issues(
 
     if store != "All":
         q = q.filter(Issue.store == store)
+    
+    # Filter by owner if provided
+    if owner and owner.strip():
+        q = q.filter(Issue.issue_owner == owner.strip())
 
     # Filter by start_date
     if start_date and start_date.strip():
@@ -745,40 +909,81 @@ def export_issues(
     # Track all temp files for cleanup
     temp_files: list[Path] = []
 
-    # Create xlsxwriter workbook
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_store = _safe_filename_part(store, max_len=20)
-    out_name = f"issues_{ts}_{safe_store}.xlsx"
+    # ============ Dynamic filename logic ============
+    # Format: [Status] - [Owner] - [Store] - [StartDate]_[EndDate].xlsx
+    # Example: 全部问题状态 - 全部责任部门 - 全部门店 - 20260321_20260322.xlsx
+    
+    # Get display values with descriptive text
+    if status and status.strip() not in ("全部", "all", ""):
+        status_display = status.strip()
+    else:
+        status_display = "全部问题状态"
+    
+    if owner and owner.strip():
+        owner_display = _safe_filename_part(owner, max_len=20)
+    else:
+        owner_display = "全部责任部门"
+    
+    if store != "All" and store:
+        store_display = _safe_filename_part(store, max_len=20)
+    else:
+        store_display = "全部门店"
+    
+    # Format dates as YYYYMMDD (no dashes)
+    start_display = ""
+    end_display = ""
+    if start_date and start_date.strip():
+        start_display = start_date.strip().replace("-", "")
+    if end_date and end_date.strip():
+        end_display = end_date.strip().replace("-", "")
+    
+    # Build filename: [Status] - [Owner] - [Store] - [StartDate]_[EndDate]
+    filename_parts = [status_display, owner_display, store_display]
+    
+    # Add dates with underscore separator (only once)
+    if start_display or end_display:
+        date_str = f"{start_display}_{end_display}" if start_display and end_display else (start_display or end_display)
+        filename_parts.append(date_str)
+    
+    # Join with " - " and add .xlsx extension (no timestamp)
+    out_name = " - ".join(filename_parts) + ".xlsx"
     out_path = EXPORTS_DIR / out_name
     temp_files.append(out_path)
 
+    # ============ Create Excel with new column order ============
     wb = xlsxwriter.Workbook(str(out_path))
     ws = wb.add_worksheet("Issues")
 
-    # Define column headers - Chinese with new Status column
-    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "整改照片", "整改时间"]
+    # Define column headers - NEW ORDER (A-J):
+    # A: 问题编号, B: 提交时间, C: 门店, D: 问题状态, E: 问题描述
+    # F: 问题照片, G: 责任部门, H: 整改反馈, I: 整改照片, J: 整改时间
+    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "责任部门", "整改反馈", "整改照片", "整改时间"]
     for col, header in enumerate(headers):
         ws.write(0, col, header)
 
-    # Column indices - using variables for easier maintenance
-    COL_ID = 0           # 问题编号
-    COL_SUBMITTED_AT = 1 # 提交时间
-    COL_STORE = 2        # 门店
-    COL_STATUS = 3       # 问题状态
-    COL_CONTENT = 4      # 问题描述
-    COL_ISSUE_PHOTO = 5 # 问题照片
-    COL_FIX_PHOTO = 6    # 整改照片
-    COL_FIX_DATE = 7     # 整改时间
+    # Column indices - NEW ORDER
+    COL_ID = 0           # A: 问题编号
+    COL_SUBMITTED_AT = 1 # B: 提交时间
+    COL_STORE = 2        # C: 门店
+    COL_STATUS = 3       # D: 问题状态
+    COL_CONTENT = 4      # E: 问题描述
+    COL_ISSUE_PHOTO = 5 # F: 问题照片
+    COL_ISSUE_OWNER = 6 # G: 责任部门 [NEW]
+    COL_FIX_COMMENTS = 7 # H: 整改反馈 [NEW]
+    COL_FIX_PHOTO = 8    # I: 整改照片 [SHIFTED from old position]
+    COL_FIX_DATE = 9     # J: 整改时间 [SHIFTED from old position]
 
     # Column widths (in characters)
     ws.set_column(COL_ID, COL_ID, 10)           # 问题编号
     ws.set_column(COL_SUBMITTED_AT, COL_SUBMITTED_AT, 16)  # 提交时间
     ws.set_column(COL_STORE, COL_STORE, 20)     # 门店
-    ws.set_column(COL_STATUS, COL_STATUS, 10)  # 问题状态
-    ws.set_column(COL_CONTENT, COL_CONTENT, 45) # 问题描述 (with text_wrap)
+    ws.set_column(COL_STATUS, COL_STATUS, 10)   # 问题状态
+    ws.set_column(COL_CONTENT, COL_CONTENT, 45) # 问题描述
     ws.set_column(COL_ISSUE_PHOTO, COL_ISSUE_PHOTO, 38)  # 问题照片
-    ws.set_column(COL_FIX_PHOTO, COL_FIX_PHOTO, 38)      # 整改照片
-    ws.set_column(COL_FIX_DATE, COL_FIX_DATE, 16)  # 整改时间
+    ws.set_column(COL_ISSUE_OWNER, COL_ISSUE_OWNER, 20)  # 责任部门 [NEW]
+    ws.set_column(COL_FIX_COMMENTS, COL_FIX_COMMENTS, 35) # 整改反馈 [NEW]
+    ws.set_column(COL_FIX_PHOTO, COL_FIX_PHOTO, 38)       # 整改照片
+    ws.set_column(COL_FIX_DATE, COL_FIX_DATE, 16)         # 整改时间
 
     # Header row height
     ws.set_row(0, 25)
@@ -853,6 +1058,12 @@ def export_issues(
         ws.write(row_idx, COL_STATUS, status_display, border_format)
 
         ws.write(row_idx, COL_CONTENT, issue.content, border_format)
+
+        # Column G: 责任部门 (issue_owner) - NEW
+        ws.write(row_idx, COL_ISSUE_OWNER, issue.issue_owner or "", border_format)
+
+        # Column H: 整改反馈 (fix_comments) - NEW
+        ws.write(row_idx, COL_FIX_COMMENTS, issue.fix_comments or "", border_format)
 
         fix_date_str = issue.fix_date.strftime("%Y-%m-%d %H:%M") if issue.fix_date else ""
         ws.write(row_idx, COL_FIX_DATE, fix_date_str, border_format)
@@ -938,6 +1149,53 @@ def export_issues(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={encoded_filename}"}
     )
+
+
+@app.post("/issues/assignments")
+async def submit_assignments(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Submit issue assignments (bulk update issue_owner).
+    Accepts JSON body: { "assignments": [{ "id": 1, "issue_owner": "门店" }, ...] }
+    """
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from e
+    
+    assignments = body.get("assignments")
+    if not assignments or not isinstance(assignments, list):
+        raise HTTPException(status_code=400, detail="assignments must be a list of objects")
+    
+    updated_data = []
+    try:
+        for item in assignments:
+            if not isinstance(item, dict):
+                continue
+            issue_id = item.get("id")
+            new_owner = item.get("issue_owner")
+            
+            if not issue_id or not new_owner:
+                continue
+            
+            issue = db.query(Issue).filter(Issue.id == issue_id).first()
+            if not issue:
+                continue
+            
+            issue.issue_owner = new_owner.strip()
+            updated_data.append({
+                "id": issue.id,
+                "issue_owner": issue.issue_owner,
+            })
+        
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed during assignment") from e
+
+    return {"updated": updated_data}
 
 
 @app.post("/delete-issues")

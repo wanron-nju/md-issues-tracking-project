@@ -16,8 +16,12 @@ class Issue(Base):
     content = Column(Text, nullable=False)
     # Path/URL of the original issue photo
     issue_photo = Column(String, nullable=False)
+    # Owner of the issue (who is responsible for fixing it)
+    issue_owner = Column(String, nullable=False, default="门店")
     # Path/URL of the rectification photo (nullable until fixed)
     fix_photo = Column(String, nullable=True)
+    # Comments added during rectification
+    fix_comments = Column(Text, nullable=True)
     # Timestamp when the rectification was submitted
     fix_date = Column(DateTime(timezone=True), nullable=True)
     # 'pending' (no fix yet) or 'completed'
