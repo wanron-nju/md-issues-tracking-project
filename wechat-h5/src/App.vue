@@ -1138,8 +1138,12 @@ const handleDeleteIssues = async () => {
             </template>
             
             <template #title>
-              <div class="issue-title-row">
+              <!-- Row 1: Date -->
+              <div class="issue-header-row">
                 <span class="issue-date">{{ issue.submitted_at }}</span>
+              </div>
+              <!-- Row 2: Tags -->
+              <div class="issue-tags-row">
                 <span class="issue-store">{{ getCleanStoreName(issue.store) }}</span>
                 <span class="issue-owner-badge">{{ issue.issue_owner }}</span>
               </div>
@@ -1254,8 +1258,12 @@ const handleDeleteIssues = async () => {
             </template>
             
             <template #title>
-              <div class="issue-title-row">
+              <!-- Row 1: Date -->
+              <div class="issue-header-row">
                 <span class="issue-date">{{ issue.submitted_at }}</span>
+              </div>
+              <!-- Row 2: Tags -->
+              <div class="issue-tags-row">
                 <span class="issue-store">{{ getCleanStoreName(issue.store) }}</span>
               </div>
             </template>
@@ -1672,12 +1680,31 @@ const handleDeleteIssues = async () => {
   </div>
 </template>
 
+<style>
+/* Global Overflow Lockdown - apply to all elements */
+html, body {
+  overflow-x: hidden !important;
+  max-width: 100vw;
+}
+
+#app {
+  overflow-x: hidden !important;
+  max-width: 100vw;
+}
+</style>
+
 <style scoped>
+* {
+  box-sizing: border-box;
+}
+
 .page {
   min-height: 100dvh;
   background: #f5f7fa;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 .page-body {
@@ -1687,6 +1714,7 @@ const handleDeleteIssues = async () => {
   max-width: 640px;
   margin: 0 auto;
   width: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -1945,9 +1973,12 @@ const handleDeleteIssues = async () => {
 }
 
 .issue-card {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   transition: background-color 0.3s ease;
-  border-bottom: 1px solid #eeeeee;
+  border-bottom: 1px solid #bbbbbb;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box !important;
 }
 
 /* Dynamic Card Backgrounds */
@@ -1970,16 +2001,27 @@ const handleDeleteIssues = async () => {
   background-color: #f0f9eb !important;
 }
 
-.issue-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Card Header - Date Row */
+.issue-header-row {
+  display: block;
+  margin-bottom: 6px;
+  text-align: left;
 }
 
 .issue-date {
   font-weight: 500;
   color: #555;
   font-size: 12px;
+  text-align: left;
+  display: block;
+}
+
+/* Card Header - Tags Row with flex-wrap */
+.issue-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .issue-owner-badge,
@@ -1989,15 +2031,19 @@ const handleDeleteIssues = async () => {
   background: #e6f1fe;
   border-radius: 4px;
   color: #333;
+  white-space: nowrap;
 }
 
 .issue-desc-text {
-  margin-top: 4px;
+  margin-top: 8px;
+  margin-right: 8px;
   color: #333;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
   text-align: left;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .issue-photo {
