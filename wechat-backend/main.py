@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 from typing import Any, Generator, Optional
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,9 @@ UPLOADS_DIR = APP_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 EXPORTS_DIR = APP_DIR / "exports"
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# CORS exposed headers - include Content-Disposition for mobile WebView access
+EXPOSE_HEADERS = ["Content-Disposition"]
 
 STORES: list[str] = [
     "1001 - 明都店",
@@ -402,9 +405,11 @@ def get_pending_issues_by_store(
     if store and store not in STORES:
         raise HTTPException(status_code=400, detail=f"Invalid store: {store}")
     
+    # FIX: Explicitly filter by status = 'pending'
+    # Only show issues that are still pending (not yet completed)
     query = (
         db.query(Issue)
-        .filter(Issue.fix_photo.is_(None))
+        .filter(Issue.status == "pending")
     )
     
     # Optional store filter - if provided, filter by store prefix
@@ -490,18 +495,19 @@ def get_unassigned_issues(
 async def submit_rectifications(
     request: Request,
     ids: list[int] = Form(...),
-    fix_photos: list[UploadFile] = File(default=[]),
     fix_comments: Optional[str] = Form(default=None),
     db: Session = Depends(get_db),
 ):
     """
-    Submit rectifications for issues.
+    Submit rectifications for issues (MIXED MODE SUPPORTED).
     
-    - fix_comments is an optional JSON string containing a list of comments (one per issue)
-    - fix_photos is an optional list of photos (can be empty for comment-only updates)
-    - Both can be updated independently
+    Keyed file lookup using request.files.get(f"file_{issue_id}")
+    
+    Logic:
+    - If photo uploaded: update fix_photo, fix_date, status='completed'
+    - If NO photo: update fix_comments ONLY, status remains 'pending'
     """
-    # Parse fix_comments if provided
+    # Parse fix_comments if provided - supports null values for "no comment"
     comments_list = None
     if fix_comments and fix_comments.strip():
         import json
@@ -512,20 +518,16 @@ async def submit_rectifications(
         except json.JSONDecodeError as e:
             raise HTTPException(status_code=400, detail=f"Invalid JSON in fix_comments: {e}")
     
-    # If photos are provided, their count must match ids
-    if len(fix_photos) > 0 and len(ids) != len(fix_photos):
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Mismatched data: {len(ids)} IDs and {len(fix_photos)} photos"
-        )
-    
-    # If comments are provided, their count must match ids (if provided)
+    # If comments are provided, their count must match ids
     if comments_list and len(ids) != len(comments_list):
         raise HTTPException(
             status_code=400, 
             detail=f"Mismatched data: {len(ids)} IDs and {len(comments_list)} comments"
         )
 
+    # Get files from request using keyed lookup: request.files.get(f"file_{id}")
+    files = await request.form()
+    
     updated_data = []
     now = datetime.now()
     saved_files: list[Path] = []
@@ -536,10 +538,14 @@ async def submit_rectifications(
             if not issue:
                 continue
             
-            # Handle fix_photo update
+            # Keyed file lookup: request.files.get(f"file_{issue_id}")
+            file_key = f"file_{issue_id}"
+            uploaded_file = files.get(file_key)
+            
+            # Handle fix_photo update ONLY if file exists
             fix_photo_url = None
-            if idx < len(fix_photos) and fix_photos[idx] and fix_photos[idx].filename:
-                upload = fix_photos[idx]
+            if uploaded_file and uploaded_file.filename:
+                upload = uploaded_file
                 
                 filename = _unique_upload_filename("fix", issue.store, upload.filename)
                 filename = str(Path(filename).with_suffix('.jpg'))
@@ -565,17 +571,20 @@ async def submit_rectifications(
                 fix_photo_url = _get_photo_url(filename)
                 issue.fix_photo = fix_photo_url
                 issue.fix_date = now
+                # ONLY set status='completed' if photo was uploaded
                 issue.status = "completed"
             
-            # Handle fix_comments update independently
+            # Handle fix_comments update (independent of photo)
+            # comments_list can contain None/null values - only update if not None
             if comments_list and idx < len(comments_list):
-                issue.fix_comments = comments_list[idx]
+                comment = comments_list[idx]
+                if comment is not None:  # Only update if not null
+                    issue.fix_comments = comment
             
-            # If both photo and comments were updated, or if only one is updated
-            # Mark as completed if photo is provided (even without comments)
-            if fix_photo_url:
-                issue.status = "completed"
-
+            # IMPORTANT: If NO photo was uploaded, status should remain 'pending'
+            # (even if comments were added - comments don't complete the issue)
+            # Status is already set to 'completed' above only when photo exists
+            
             updated_data.append({
                 "id": issue.id,
                 "fix_photo_url": issue.fix_photo,
@@ -1143,11 +1152,17 @@ def export_issues(
 
     # Return using StreamingResponse with generator that deletes all tracked files after send
     # URL-encode the filename for proper handling of Chinese characters
+    # Dual-header approach: filename (URL-encoded) + filename* (UTF-8'' encoded per RFC 5987)
     encoded_filename = quote(out_name)
+    content_disposition = f"attachment; filename=\"{encoded_filename}\"; filename*=UTF-8''{encoded_filename}"
+    
     return StreamingResponse(
         _file_sender(temp_files),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={encoded_filename}"}
+        headers={
+            "Content-Disposition": content_disposition,
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
     )
 
 

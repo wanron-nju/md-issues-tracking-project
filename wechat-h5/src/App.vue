@@ -623,7 +623,7 @@ const submitRectifications = async () => {
 
   const form = new FormData()
   
-  // Get all issues with changes
+  // Get all issues with changes (file OR comments)
   const issueIds = Object.keys(rectifiedCache.value)
     .filter(id => {
       const cache = rectifiedCache.value[Number(id)]
@@ -641,16 +641,16 @@ const submitRectifications = async () => {
     form.append('ids', id.toString())
   })
   
-  // Add photos (use empty string for issues without photo changes)
+  // Add photos with key-based approach: file_{id}
+  // Only append if file exists - backend will look for file_{id} keys
   issueIds.forEach(id => {
     const cache = rectifiedCache.value[id]
     if (cache && cache.file && cache.file.file) {
-      form.append('fix_photos', cache.file.file)
+      form.append(`file_${id}`, cache.file.file)
     }
-    // Note: Can't add empty placeholders in multipart, handled by backend
   })
   
-  // Add comments as JSON array (only for issues with comments)
+  // Add comments as JSON array (null for issues without comments)
   const commentsList: (string | null)[] = issueIds.map(id => {
     const cache = rectifiedCache.value[id]
     return cache?.comments || null
@@ -817,7 +817,7 @@ const exportToExcel = async () => {
   isExporting.value = true
   
   const loading = showLoadingToast({
-    message: '正在导出...',
+    message: '正在导出... \n注意 iOS：预览打开后，点右上角"..."转发到"文件传输助手"。在"文件传输助手"中点击下载链接，确认"下载"后，再转发一次到微信',
     forbidClick: true,
     duration: 0,
   })
