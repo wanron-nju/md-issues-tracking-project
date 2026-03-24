@@ -803,7 +803,7 @@ def _load_and_resize_image(photo_url: str) -> tuple[bytes, int, int] | None:
         if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
         result = _resize_image_to_long_side(img, 250)
-        print(f"DEBUG: successfully processed image {filename}, size: {result[1]}x{result[2]}")
+        # print(f"DEBUG: successfully processed image {filename}, size: {result[1]}x{result[2]}")
         return result
     except Exception as e:
         print(f"Error processing image {filename}: {e}")
@@ -844,7 +844,7 @@ def _file_sender(file_paths: list[Path], chunk_size: int = 8192) -> Generator[by
             try:
                 if file_path.exists():
                     file_path.unlink()
-                    print(f"DEBUG: Deleted file after send: {file_path.name}")
+                    # print(f"DEBUG: Deleted file after send: {file_path.name}")
             except Exception as e:
                 print(f"ERROR deleting file {file_path.name}: {e}")
 
@@ -858,16 +858,28 @@ def export_issues(
     owner: str = None,
     db: Session = Depends(get_db),
 ):
+    import re
+    
     # Housekeeping: Clean up old exports (>10 minutes)
     _cleanup_old_exports()
     
-    if store != "All" and store not in STORES:
-        raise HTTPException(status_code=400, detail=f"Invalid store: {store}")
+    # Forgiving validation: extract 4-digit code from any store string
+    # e.g., "1042 - 农发区店" -> "1042", or "1042" stays "1042"
+    store_code = store
+    if store and store != "All":
+        match = re.match(r'^(\d{4})', store)
+        if match:
+            store_code = match.group(1)
+        else:
+            # If no 4-digit prefix found, try to match the full string in STORES
+            if store not in STORES:
+                raise HTTPException(status_code=400, detail=f"Invalid store: {store}")
 
     q = db.query(Issue)
 
-    if store != "All":
-        q = q.filter(Issue.store == store)
+    if store_code and store_code != "All":
+        # Use prefix match: '1042 - %' matches '1042 - 农发区店'
+        q = q.filter(Issue.store.like(f"{store_code} - %"))
     
     # Filter by owner if provided
     if owner and owner.strip():
@@ -913,7 +925,7 @@ def export_issues(
             detail="Invalid status. Use '待整改', '已整改', '全部', 'pending', 'completed', or 'all'.",
         )
 
-    issues = q.order_by(Issue.id.asc()).all()
+    issues = q.order_by(Issue.store.asc(), Issue.submitted_at.asc()).all()
 
     # Track all temp files for cleanup
     temp_files: list[Path] = []
@@ -1108,7 +1120,7 @@ def export_issues(
                     }
                 )
 
-                print(f"DEBUG: Added issue photo to row {row_idx}, col F, size: {issue_img_width}x{issue_img_height}, y_offset: {y_offset}")
+                # print(f"DEBUG: Added issue photo to row {row_idx}, col F, size: {issue_img_width}x{issue_img_height}, y_offset: {y_offset}")
             except Exception as e:
                 print(f"ERROR adding issue photo for row {row_idx}: {e}")
 
@@ -1143,7 +1155,7 @@ def export_issues(
                     }
                 )
 
-                print(f"DEBUG: Added fix photo to row {row_idx}, col G, size: {fix_img_width}x{fix_img_height}, y_offset: {y_offset}")
+                # print(f"DEBUG: Added fix photo to row {row_idx}, col G, size: {fix_img_width}x{fix_img_height}, y_offset: {y_offset}")
             except Exception as e:
                 print(f"ERROR adding fix photo for row {row_idx}: {e}")
 

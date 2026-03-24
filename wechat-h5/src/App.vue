@@ -824,8 +824,11 @@ const exportToExcel = async () => {
   
   try {
     const params = new URLSearchParams()
+    // Extract 4-digit store code using regex (e.g., "1042 - 农发区店" -> "1042")
     if (trackingStore.value !== STORE_ALL) {
-      params.append('store', trackingStore.value)
+      const match = trackingStore.value.match(/^(\d{4})/)
+      const storeCode = match ? match[1] : trackingStore.value
+      params.append('store', storeCode)
     }
     if (trackingStartDate.value) {
       params.append('start_date', trackingStartDate.value)
