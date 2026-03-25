@@ -213,6 +213,10 @@ const maintenanceStatus = ref('已整改')
 const maintenanceStatusPicker = ref(false)
 const isDeleting = ref(false)
 
+// Disk analytics state
+const diskStats = ref<{ summary: { total: string; used_pct: string; days_left: number }; history: { date: string; issue_count: number; fix_count: number; size: string }[] } | null>(null)
+const isLoadingDiskStats = ref(false)
+
 // ============ REFS ============
 const storePickerRef = ref<any>(null)
 const rectificationPickerRef = ref<any>(null)
@@ -253,9 +257,8 @@ const initToday = () => {
   const today = formatDate(new Date())
   trackingStartDate.value = today
   trackingEndDate.value = today
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  maintenanceDate.value = formatDate(thirtyDaysAgo)
+  // Maintenance date starts empty - user must select a date
+  maintenanceDate.value = ''
   assignmentDate.value = today
 }
 
@@ -432,6 +435,7 @@ const goHome = () => {
 
 const goMaintenance = () => {
   currentPage.value = 'maintenance'
+  fetchDiskStats()
 }
 
 const goRectification = () => {
@@ -814,12 +818,36 @@ const onConfirmEndDate = (value: Date | Date[]) => {
 const exportToExcel = async () => {
   if (isExporting.value) return
   
+  // Check if date span exceeds 3 days
+  if (trackingStartDate.value && trackingEndDate.value) {
+    const start = new Date(trackingStartDate.value)
+    const end = new Date(trackingEndDate.value)
+    const daySpan = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+    
+    // If span is 3 or more days difference (spans 4+ calendar days), show warning dialog
+    if (daySpan >= 3) {
+      try {
+        await showConfirmDialog({
+          title: '日期跨度过长',
+          message: '日期跨度过长：为了确保系统稳定，单次导出请不要超过3天。如需更多数据，请分批导出。',
+          confirmButtonText: '确定',
+          showCancelButton: false,
+        })
+      } catch (e) {
+        // User confirmed, just return without exporting
+        return
+      }
+      return
+    }
+  }
+  
   isExporting.value = true
   
+  // Show loading toast first (before building URL)
   const loading = showLoadingToast({
-    message: '正在导出... \n注意 iOS：预览打开后，点右上角"..."转发到"文件传输助手"。在"文件传输助手"中点击下载链接，确认"下载"后，再转发一次到微信',
+    message: '正在生成报表...\n数据较多时可能需要10秒左右，请勿关闭页面。',
     forbidClick: true,
-    duration: 0,
+    duration: 10000,
   })
   
   try {
@@ -847,14 +875,24 @@ const exportToExcel = async () => {
     
     const url = `${API_BASE}/export-issues?${params.toString()}`
     
-    window.open(url, '_blank')
+    // Give the browser 100ms to "paint" the Toast on screen before triggering download
+    setTimeout(() => {
+      window.location.href = url
+    }, 100)
     
-    loading.close()
-    showSuccessToast('导出成功！')
+    // Note: We don't close the loading toast here because:
+    // 1. The server takes 8-10 seconds to generate the Excel
+    // 2. The browser will handle the download response
+    // 3. The toast will auto-dismiss after 10 seconds (duration: 10000)
+    
+    // Reset exporting flag after a delay to allow new exports
+    setTimeout(() => {
+      isExporting.value = false
+    }, 15000)
+    
   } catch (e) {
     loading.close()
     showFailToast('导出失败，请重试')
-  } finally {
     isExporting.value = false
   }
 }
@@ -919,6 +957,31 @@ const handleDeleteIssues = async () => {
   } finally {
     isDeleting.value = false
   }
+}
+
+// ============ DISK ANALYTICS HANDLERS ============
+const fetchDiskStats = async () => {
+  isLoadingDiskStats.value = true
+  try {
+    const response = await axios.get(`${API_BASE}/api/admin/maintenance/stats`)
+    diskStats.value = response.data
+  } catch (e) {
+    console.error('Failed to fetch disk stats:', e)
+    showToast('获取磁盘统计失败')
+  } finally {
+    isLoadingDiskStats.value = false
+  }
+}
+
+// Fetch disk stats when entering maintenance page
+const handleEnterMaintenance = () => {
+  currentPage.value = 'maintenance'
+  fetchDiskStats()
+}
+
+// Refresh disk stats
+const refreshDiskStats = () => {
+  fetchDiskStats()
 }
 </script>
 
@@ -1379,14 +1442,72 @@ const handleDeleteIssues = async () => {
 
       <!-- ============ MAINTENANCE PAGE ============ -->
       <template v-else-if="currentPage === 'maintenance'">
-        <section class="form-card">
+        <!-- Section A: Disk Summary Card -->
+        <section class="disk-summary-card">
+          <div class="disk-summary-header">
+            <span class="disk-summary-title">磁盘占用统计</span>
+            <van-icon 
+              name="replay" 
+              class="disk-refresh-icon" 
+              @click="refreshDiskStats"
+            />
+          </div>
+          <div v-if="isLoadingDiskStats" class="disk-summary-loading">
+            正在加载...
+          </div>
+          <div v-else-if="diskStats" class="disk-summary-content">
+            <div class="disk-summary-line">
+              <span class="disk-summary-text">
+                <strong>磁盘:</strong> {{ diskStats.summary.total }} | 
+                <strong>占用:</strong> {{ diskStats.summary.used_pct }} | 
+                <strong>预计可用:</strong> {{ diskStats.summary.days_left }} 天
+              </span>
+            </div>
+          </div>
+          <div v-else class="disk-summary-loading">
+            暂无数据
+          </div>
+        </section>
+
+        <!-- Section B: Daily Analytics Table -->
+        <section v-if="diskStats && diskStats.history && diskStats.history.length > 0" class="disk-table-section">
+          <div class="disk-table-header">
+            <span class="disk-table-title">每日详情</span>
+          </div>
+          <div class="disk-table-container">
+            <table class="disk-table">
+              <thead>
+                <tr>
+                  <th class="col-date">日期</th>
+                  <th class="col-count">问题个数</th>
+                  <th class="col-count">解决个数</th>
+                  <th class="col-size">占用空间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr 
+                  v-for="(row, index) in diskStats.history" 
+                  :key="row.date"
+                  :class="{ 'row-odd': index % 2 === 1 }"
+                >
+                  <td class="col-date">{{ row.date }}</td>
+                  <td class="col-count">{{ row.issue_count }}</td>
+                  <td class="col-count">{{ row.fix_count }}</td>
+                  <td class="col-size">{{ row.size }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="form-card maintenance-form-card">
           <van-cell-group inset>
             <van-field
               v-model="maintenanceDate"
               label="截止日期"
               readonly
               clickable
-              placeholder="请选择截止日期"
+              placeholder="截止日之前（含）"
               @click="maintenanceDatePicker = true"
             >
               <template #right-icon>
@@ -1405,7 +1526,7 @@ const handleDeleteIssues = async () => {
             />
           </van-cell-group>
 
-          <div class="submit-wrapper">
+          <div class="submit-wrapper maintenance-submit-wrapper">
             <van-button
               block
               round
@@ -2124,5 +2245,184 @@ html, body {
   .submit-wrapper {
     margin-inline: 24px;
   }
+}
+
+/* ============ DISK ANALYTICS STYLES ============ */
+
+/* Section A: Disk Summary Card */
+.disk-summary-card {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  color: white;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.disk-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.disk-summary-title {
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.disk-refresh-icon {
+  font-size: 18px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: transform 0.3s ease;
+}
+
+.disk-refresh-icon:active {
+  transform: rotate(180deg);
+}
+
+.disk-summary-content {
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  padding-top: 8px;
+}
+
+.disk-summary-line {
+  display: flex;
+  align-items: center;
+}
+
+.disk-summary-text {
+  font-size: 14px;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.disk-summary-text strong {
+  font-weight: 700;
+}
+
+.disk-summary-loading {
+  padding: 8px 0;
+  font-size: 13px;
+  opacity: 0.8;
+  text-align: center;
+}
+
+/* Section B: Daily Analytics Table */
+.disk-table-section {
+  margin-top: 12px;
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.disk-table-header {
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.disk-table-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.disk-table-container {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.disk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.disk-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.disk-table th {
+  background: #f1f3f5;
+  color: #495057;
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.disk-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e9ecef;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.disk-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Zebra stripes */
+.disk-table tbody tr.row-odd {
+  background-color: #f8f9fa;
+}
+
+.disk-table tbody tr:hover {
+  background-color: #e7f5ff;
+}
+
+/* Column alignment */
+.col-date {
+  text-align: left !important;
+}
+
+.col-count {
+  text-align: center !important;
+}
+
+.col-size {
+  text-align: right !important;
+}
+
+/* ============ MAINTENANCE PAGE LAYOUT ============ */
+
+/* Full-width maintenance form card - matches disk summary card width */
+.maintenance-form-card {
+  margin-top: 12px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Make van-cell-group inset match the disk summary card styling */
+.maintenance-form-card :deep(.van-cell-group--inset) {
+  margin: 0;
+  border-radius: 0;
+}
+
+/* Full-width submit button for maintenance page */
+.maintenance-submit-wrapper {
+  margin: 20px 0 0;
+  padding: 0 16px;
+}
+
+/* Remove frames/borders from datepicker and status selector in maintenance */
+.maintenance-form-card :deep(.van-field) {
+  background: white;
+}
+
+.maintenance-form-card :deep(.van-field::after) {
+  display: none;
 }
 </style>

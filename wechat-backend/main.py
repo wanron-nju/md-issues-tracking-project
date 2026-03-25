@@ -21,6 +21,7 @@ import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name
 from sqlalchemy.orm import Session
 
+from maint_disk_usage_stats import collect_maintenance_stats
 from db import engine, get_db
 from models import Base, Issue
 
@@ -748,7 +749,7 @@ def _resize_image_to_long_side(
 ) -> tuple[bytes, int, int]:
     """
     Resize image so that the LONGER side is exactly 'long_side' pixels.
-    Returns the resized image as PNG bytes and its dimensions (width, height).
+    Returns the resized image as JPEG bytes and its dimensions (width, height).
     
     If watermark parameters are provided, applies watermark after resize but before save.
     """
@@ -770,9 +771,13 @@ def _resize_image_to_long_side(
     if watermark_type and store_name and issue_id is not None and timestamp:
         resized = _add_watermark(resized, watermark_type, store_name, issue_id, timestamp)
     
-    # Save to BytesIO as PNG
+    # Convert to RGB mode to avoid JPEG transparency errors
+    if resized.mode != 'RGB':
+        resized = resized.convert('RGB')
+    
+    # Save to BytesIO as JPEG with compression (quality=70, optimize=True)
     buf = io.BytesIO()
-    resized.save(buf, format='PNG')
+    resized.save(buf, format='JPEG', quality=70, optimize=True)
     buf.seek(0)
     return buf.getvalue(), new_width, new_height
 
@@ -1223,6 +1228,15 @@ async def submit_assignments(
         raise HTTPException(status_code=500, detail="Database transaction failed during assignment") from e
 
     return {"updated": updated_data}
+
+
+@app.get("/api/admin/maintenance/stats")
+def get_maintenance_stats():
+    """
+    Get disk usage statistics and daily upload history.
+    Returns summary (total, used_pct, days_left) and history (list of daily stats).
+    """
+    return collect_maintenance_stats()
 
 
 @app.post("/delete-issues")
