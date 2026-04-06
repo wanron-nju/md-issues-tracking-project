@@ -107,6 +107,7 @@ const ISSUE_OWNERS: string[] = [
   '工程部',
   '企划部',
   '信息部',
+  '人事部',
 ]
 
 // Full list with unassigned (for submission page)
