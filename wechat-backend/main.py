@@ -87,6 +87,7 @@ class IssueCreate(BaseModel):
     store: str = Field(..., description="Store name")
     content: str = Field(..., description="Issue description")
     issue_owner: str = Field(..., description="Owner of the issue (who is responsible)")
+    store_sector: Optional[str] = Field(None, description="Store sector/柜组 (食品/非食/生鲜/其他), only used when issue_owner is '门店'")
     
     class Config:
         json_schema_extra = {
@@ -94,7 +95,8 @@ class IssueCreate(BaseModel):
                 "submit_date": "2024-01-15",
                 "store": "1001 - 明都店",
                 "content": "商品摆放不规范",
-                "issue_owner": "门店"
+                "issue_owner": "门店",
+                "store_sector": "食品"
             }
         }
 
@@ -106,6 +108,7 @@ class IssueOut(BaseModel):
     content: str
     issue_photo_url: Optional[str] = None
     issue_owner: str
+    store_sector: Optional[str] = None
     fix_photo_url: Optional[str] = None
     fix_comments: Optional[str] = None
     fix_date: Optional[str] = None
@@ -305,6 +308,7 @@ async def submit_issue(
     content: str = Form(...),
     issue_photo: UploadFile = File(...),
     issue_owner: str = Form(...),
+    store_sector: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     if store not in STORES:
@@ -316,6 +320,19 @@ async def submit_issue(
 
     if not issue_photo.filename:
         raise HTTPException(status_code=400, detail="issue_photo filename is missing")
+
+    # Validate store_sector if provided (only allowed for '门店' owner)
+    valid_sectors = ["食品", "非食", "生鲜", "其他"]
+    if store_sector and store_sector.strip():
+        if issue_owner.strip() != "门店":
+            # Reset store_sector if owner is not '门店'
+            store_sector = None
+        elif store_sector.strip() not in valid_sectors:
+            raise HTTPException(status_code=400, detail=f"Invalid store_sector. Must be one of: {valid_sectors}")
+        else:
+            store_sector = store_sector.strip()
+    else:
+        store_sector = None
 
     # Parse the submitted date string and create datetime
     # Support both "YYYY-MM-DD" and "YYYY-MM-DD HH:mm:ss" formats
@@ -335,6 +352,7 @@ async def submit_issue(
         content=content,
         issue_photo="",  # Temporary, will update later
         issue_owner=issue_owner.strip(),
+        store_sector=store_sector,
         status="pending",
     )
 
@@ -392,6 +410,7 @@ async def submit_issue(
         "content": issue.content,
         "issue_photo_url": issue.issue_photo,
         "issue_owner": issue.issue_owner,
+        "store_sector": issue.store_sector,
         "status": issue.status,
     }
 
@@ -400,6 +419,7 @@ async def submit_issue(
 def get_pending_issues_by_store(
     store: Optional[str] = None,
     owner: Optional[str] = None,
+    store_sector: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     # Validate store if provided
@@ -425,6 +445,11 @@ def get_pending_issues_by_store(
         # If no owner filter, return empty or could raise error
         raise HTTPException(status_code=400, detail="owner parameter is required")
     
+    # Optional store_sector filter - only filter if owner is '门店' AND store_sector is provided
+    # If store_sector is not provided or is empty, return all sectors (no filtering)
+    if store_sector and store_sector.strip() and owner and owner.strip() == "门店":
+        query = query.filter(Issue.store_sector == store_sector.strip())
+    
     issues = query.order_by(Issue.id.desc()).all()
 
     return [
@@ -435,6 +460,7 @@ def get_pending_issues_by_store(
             "content": issue.content,
             "issue_photo_url": issue.issue_photo,
             "issue_owner": issue.issue_owner,
+            "store_sector": issue.store_sector,
             "fix_comments": issue.fix_comments,
             "status": issue.status,
         }
@@ -980,10 +1006,10 @@ def export_issues(
     wb = xlsxwriter.Workbook(str(out_path))
     ws = wb.add_worksheet("Issues")
 
-    # Define column headers - NEW ORDER (A-J):
+    # Define column headers - NEW ORDER (A-K):
     # A: 问题编号, B: 提交时间, C: 门店, D: 问题状态, E: 问题描述
-    # F: 问题照片, G: 责任部门, H: 整改反馈, I: 整改照片, J: 整改时间
-    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "责任部门", "整改反馈", "整改照片", "整改时间"]
+    # F: 问题照片, G: 责任部门, H: 门店柜组, I: 整改反馈, J: 整改照片, K: 整改时间
+    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "责任部门", "门店柜组", "整改反馈", "整改照片", "整改时间"]
     for col, header in enumerate(headers):
         ws.write(0, col, header)
 
@@ -994,10 +1020,11 @@ def export_issues(
     COL_STATUS = 3       # D: 问题状态
     COL_CONTENT = 4      # E: 问题描述
     COL_ISSUE_PHOTO = 5 # F: 问题照片
-    COL_ISSUE_OWNER = 6 # G: 责任部门 [NEW]
-    COL_FIX_COMMENTS = 7 # H: 整改反馈 [NEW]
-    COL_FIX_PHOTO = 8    # I: 整改照片 [SHIFTED from old position]
-    COL_FIX_DATE = 9     # J: 整改时间 [SHIFTED from old position]
+    COL_ISSUE_OWNER = 6 # G: 责任部门
+    COL_STORE_SECTOR = 7 # H: 门店柜组 [NEW]
+    COL_FIX_COMMENTS = 8 # I: 整改反馈 [SHIFTED from H]
+    COL_FIX_PHOTO = 9    # J: 整改照片 [SHIFTED to J]
+    COL_FIX_DATE = 10    # K: 整改时间 [SHIFTED from J]
 
     # Column widths (in characters)
     ws.set_column(COL_ID, COL_ID, 10)           # 问题编号
@@ -1006,8 +1033,9 @@ def export_issues(
     ws.set_column(COL_STATUS, COL_STATUS, 10)   # 问题状态
     ws.set_column(COL_CONTENT, COL_CONTENT, 45) # 问题描述
     ws.set_column(COL_ISSUE_PHOTO, COL_ISSUE_PHOTO, 38)  # 问题照片
-    ws.set_column(COL_ISSUE_OWNER, COL_ISSUE_OWNER, 20)  # 责任部门 [NEW]
-    ws.set_column(COL_FIX_COMMENTS, COL_FIX_COMMENTS, 35) # 整改反馈 [NEW]
+    ws.set_column(COL_ISSUE_OWNER, COL_ISSUE_OWNER, 20)  # 责任部门
+    ws.set_column(COL_STORE_SECTOR, COL_STORE_SECTOR, 15)  # 门店柜组
+    ws.set_column(COL_FIX_COMMENTS, COL_FIX_COMMENTS, 35) # 整改反馈
     ws.set_column(COL_FIX_PHOTO, COL_FIX_PHOTO, 38)       # 整改照片
     ws.set_column(COL_FIX_DATE, COL_FIX_DATE, 16)         # 整改时间
 
@@ -1085,10 +1113,13 @@ def export_issues(
 
         ws.write(row_idx, COL_CONTENT, issue.content, border_format)
 
-        # Column G: 责任部门 (issue_owner) - NEW
+        # Column G: 责任部门 (issue_owner)
         ws.write(row_idx, COL_ISSUE_OWNER, issue.issue_owner or "", border_format)
 
-        # Column H: 整改反馈 (fix_comments) - NEW
+        # Column H: 门店柜组 (store_sector) - leave blank if None/empty
+        ws.write(row_idx, COL_STORE_SECTOR, issue.store_sector or "", border_format)
+
+        # Column I: 整改反馈 (fix_comments)
         ws.write(row_idx, COL_FIX_COMMENTS, issue.fix_comments or "", border_format)
 
         fix_date_str = issue.fix_date.strftime("%Y-%m-%d %H:%M") if issue.fix_date else ""

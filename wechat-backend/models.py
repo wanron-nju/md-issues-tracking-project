@@ -18,6 +18,9 @@ class Issue(Base):
     issue_photo = Column(String, nullable=False)
     # Owner of the issue (who is responsible for fixing it)
     issue_owner = Column(String, nullable=False, default="门店")
+    # Store sector/柜组 (nullable, only applies when issue_owner is '门店')
+    # Options: "食品", "非食", "生鲜", "其他"
+    store_sector = Column(String, nullable=True)
     # Path/URL of the rectification photo (nullable until fixed)
     fix_photo = Column(String, nullable=True)
     # Comments added during rectification
@@ -26,4 +29,3 @@ class Issue(Base):
     fix_date = Column(DateTime(timezone=True), nullable=True)
     # 'pending' (no fix yet) or 'completed'
     status = Column(String, nullable=False, default="pending")
-

@@ -132,7 +132,15 @@ const submitDate = ref('')
 const selectedStore = ref(STORE_EMPTY)
 const content = ref('')
 const issueOwner = ref(ISSUE_OWNER_EMPTY)
+const storeSector = ref('')
 const fileList = ref<any[]>([])
+
+// Watch for issueOwner changes - reset storeSector if owner changes away from '门店'
+const onIssueOwnerChange = (newOwner: string) => {
+  if (newOwner !== '门店') {
+    storeSector.value = ''
+  }
+}
 
 const showCalendar = ref(false)
 const showStorePicker = ref(false)
@@ -144,6 +152,7 @@ const rectificationStore = ref(STORE_EMPTY)
 const rectificationStorePicker = ref(false)
 const rectificationOwner = ref(ISSUE_OWNER_EMPTY)
 const rectificationOwnerPicker = ref(false)
+const rectificationStoreSector = ref('全部')
 const pendingIssues = ref<any[]>([])
 const rectifiedCache = ref<Record<number, { file?: any; comments?: string; originalComments?: string }>>({})
 const isLoadingRectification = ref(false)
@@ -152,6 +161,11 @@ const isSubmittingRectification = ref(false)
 // Rectification filter validation - both store AND owner required
 const isRectificationFilterValid = computed(() => {
   return rectificationStore.value && rectificationOwner.value
+})
+
+// Store Sector visibility: show when owner is '门店' AND a specific store is selected
+const showRectificationStoreSector = computed(() => {
+  return rectificationOwner.value === '门店' && !!rectificationStore.value && rectificationStore.value !== STORE_EMPTY
 })
 
 // ============ ASSIGNMENT PAGE STATE ============
@@ -268,14 +282,19 @@ onMounted(() => {
 })
 
 // ============ COMPUTED ============
-// Submission validation - include issueOwner
+// Submission validation - include issueOwner and storeSector (required when owner is '门店')
 const isSubmitDisabled = computed(() => {
+  // If owner is '门店', storeSector must be selected
+  const needsStoreSector = issueOwner.value === '门店'
+  const storeSectorValid = !needsStoreSector || !!storeSector.value
+  
   return (
     !submitDate.value ||
     !selectedStore.value ||
     !content.value.trim() ||
     fileList.value.length === 0 ||
-    !issueOwner.value
+    !issueOwner.value ||
+    !storeSectorValid
   )
 })
 
@@ -397,6 +416,10 @@ const handleSubmit = async () => {
   form.append('content', content.value.trim())
   form.append('issue_photo', photo)
   form.append('issue_owner', issueOwner.value)
+  // Only append store_sector if owner is '门店' and sector is selected
+  if (issueOwner.value === '门店' && storeSector.value) {
+    form.append('store_sector', storeSector.value)
+  }
 
   const loading = showLoadingToast({
     message: '正在提交...',
@@ -417,6 +440,7 @@ const handleSubmit = async () => {
     content.value = ''
     fileList.value = []
     issueOwner.value = ISSUE_OWNER_EMPTY
+    storeSector.value = ''
   } catch (e) {
     loading.close()
     showFailToast('提交失败，请重试')
@@ -490,6 +514,12 @@ const fetchPendingIssues = async () => {
       params.store = rectificationStore.value
     }
     
+    // Add store_sector filter only if owner is '门店' AND a specific sector is selected
+    // If '全部' is selected, do not include the parameter (return all sectors)
+    if (rectificationOwner.value === '门店' && rectificationStoreSector.value && rectificationStoreSector.value !== '全部') {
+      params.store_sector = rectificationStoreSector.value
+    }
+    
     const response = await axios.get(`${API_BASE}/issues/pending`, {
       params
     })
@@ -524,6 +554,8 @@ const onRectificationStoreConfirm = ({
 }) => {
   if (selectedOptions && selectedOptions[0]) {
     rectificationStore.value = selectedOptions[0].value
+    // Reset storeSector when store changes
+    rectificationStoreSector.value = ''
     pendingIssues.value = []
     rectifiedCache.value = {}
   }
@@ -537,6 +569,8 @@ const onRectificationOwnerConfirm = ({
 }) => {
   if (selectedOptions && selectedOptions[0]) {
     rectificationOwner.value = selectedOptions[0].value
+    // Reset storeSector when owner changes (even if still '门店', new selection means new context)
+    rectificationStoreSector.value = ''
     pendingIssues.value = []
     rectifiedCache.value = {}
   }
@@ -1119,6 +1153,24 @@ const refreshDiskStats = () => {
               @click="showIssueOwnerPicker = true"
             />
 
+            <!-- Store Sector Radio Group - only visible when owner is '门店' -->
+            <van-field
+              v-if="issueOwner === '门店'"
+              label="选择柜组"
+              label-width="6.5em"
+              class="store-sector-field"
+              disabled
+            >
+              <template #input>
+                <div class="store-sector-grid">
+                  <van-radio v-model="storeSector" name="食品">食品</van-radio>
+                  <van-radio v-model="storeSector" name="非食">非食</van-radio>
+                  <van-radio v-model="storeSector" name="生鲜">生鲜</van-radio>
+                  <van-radio v-model="storeSector" name="其他">其他</van-radio>
+                </div>
+              </template>
+            </van-field>
+
             <van-field
               label="问题照片"
               label-width="6.5em"
@@ -1173,6 +1225,31 @@ const refreshDiskStats = () => {
               placeholder="请选择门店（可留空）"
               @click="rectificationStorePicker = true"
             />
+
+            <!-- Store Sector Radio Group - only visible when owner is '门店' AND a specific store is selected -->
+            <van-field
+              v-if="showRectificationStoreSector"
+              label="选择柜组"
+              label-width="6.5em"
+              class="store-sector-field"
+              disabled
+            >
+              <template #input>
+                <div class="rectification-store-sector-grid">
+                  <div class="sector-row-full">
+                    <van-radio v-model="rectificationStoreSector" name="全部">全部</van-radio>
+                  </div>
+                  <div class="sector-row-two">
+                    <van-radio v-model="rectificationStoreSector" name="食品">食品</van-radio>
+                    <van-radio v-model="rectificationStoreSector" name="非食">非食</van-radio>
+                  </div>
+                  <div class="sector-row-two">
+                    <van-radio v-model="rectificationStoreSector" name="生鲜">生鲜</van-radio>
+                    <van-radio v-model="rectificationStoreSector" name="其他">其他</van-radio>
+                  </div>
+                </div>
+              </template>
+            </van-field>
           </van-cell-group>
 
           <div class="submit-wrapper">
@@ -1213,6 +1290,7 @@ const refreshDiskStats = () => {
               <div class="issue-tags-row">
                 <span class="issue-store">{{ getCleanStoreName(issue.store) }}</span>
                 <span class="issue-owner-badge">{{ issue.issue_owner }}</span>
+                <span v-if="issue.store_sector" class="issue-sector-badge">{{ issue.store_sector }}</span>
               </div>
             </template>
 
@@ -2157,6 +2235,68 @@ html, body {
   border-radius: 4px;
   color: #333;
   white-space: nowrap;
+}
+
+/* Store sector tag - light pink (#ffe4e1) */
+.issue-sector-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #ffe4e1;
+  border-radius: 4px;
+  color: #333;
+  white-space: nowrap;
+}
+
+/* Store sector field - inherits van-field styling for alignment */
+.store-sector-field {
+  padding: 10px 16px !important;
+}
+
+.store-sector-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #323233 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.store-sector-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Store sector grid - 2x2 layout */
+.store-sector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 24px;
+  width: 100%;
+}
+
+/* Rectification store sector grid - 3-row layout */
+.rectification-store-sector-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Row 1: 全部 - full width */
+.rectification-store-sector-grid .sector-row-full {
+  display: flex;
+  align-items: center;
+}
+
+/* Rows 2 & 3: Two columns */
+.rectification-store-sector-grid .sector-row-two {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.store-sector-col {
+  display: flex;
+  align-items: center;
 }
 
 .issue-desc-text {
