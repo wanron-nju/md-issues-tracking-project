@@ -66,6 +66,9 @@ const STORES: string[] = [
   '1055 - 紫云店',
   '1058 - 学府店',
   '1059 - 怀德店',
+  '1007 - 电力店',
+  '1017 - 政务店',
+  '1067 - 恒立店',
 ]
 
 const trackingStoreColumns = [
