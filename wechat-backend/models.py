@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, Integer, Boolean, String, Text, func
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -21,6 +21,8 @@ class Issue(Base):
     # Store sector/柜组 (nullable, only applies when issue_owner is '门店')
     # Options: "食品", "非食", "生鲜", "其他"
     store_sector = Column(String, nullable=True)
+    # Food safety relevancy - whether the issue is related to food safety
+    is_food_safety = Column(Boolean, nullable=False, default=False)
     # Path/URL of the rectification photo (nullable until fixed)
     fix_photo = Column(String, nullable=True)
     # Comments added during rectification

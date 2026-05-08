@@ -91,6 +91,7 @@ class IssueCreate(BaseModel):
     content: str = Field(..., description="Issue description")
     issue_owner: str = Field(..., description="Owner of the issue (who is responsible)")
     store_sector: Optional[str] = Field(None, description="Store sector/柜组 (食品/非食/生鲜/其他), only used when issue_owner is '门店'")
+    is_food_safety: bool = Field(False, description="Whether the issue is related to food safety")
     
     class Config:
         json_schema_extra = {
@@ -99,7 +100,8 @@ class IssueCreate(BaseModel):
                 "store": "1001 - 明都店",
                 "content": "商品摆放不规范",
                 "issue_owner": "门店",
-                "store_sector": "食品"
+                "store_sector": "食品",
+                "is_food_safety": False
             }
         }
 
@@ -112,6 +114,7 @@ class IssueOut(BaseModel):
     issue_photo_url: Optional[str] = None
     issue_owner: str
     store_sector: Optional[str] = None
+    is_food_safety: bool = False
     fix_photo_url: Optional[str] = None
     fix_comments: Optional[str] = None
     fix_date: Optional[str] = None
@@ -312,6 +315,7 @@ async def submit_issue(
     issue_photo: UploadFile = File(...),
     issue_owner: str = Form(...),
     store_sector: Optional[str] = Form(None),
+    is_food_safety: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     if store not in STORES:
@@ -356,6 +360,7 @@ async def submit_issue(
         issue_photo="",  # Temporary, will update later
         issue_owner=issue_owner.strip(),
         store_sector=store_sector,
+        is_food_safety=is_food_safety,
         status="pending",
     )
 
@@ -414,6 +419,7 @@ async def submit_issue(
         "issue_photo_url": issue.issue_photo,
         "issue_owner": issue.issue_owner,
         "store_sector": issue.store_sector,
+        "is_food_safety": issue.is_food_safety,
         "status": issue.status,
     }
 
@@ -464,6 +470,7 @@ def get_pending_issues_by_store(
             "issue_photo_url": issue.issue_photo,
             "issue_owner": issue.issue_owner,
             "store_sector": issue.store_sector,
+            "is_food_safety": issue.is_food_safety,
             "fix_comments": issue.fix_comments,
             "status": issue.status,
         }
@@ -890,6 +897,7 @@ def export_issues(
     start_date: str = None,
     end_date: str = None,
     owner: str = None,
+    is_food_safety: str = None,
     db: Session = Depends(get_db),
 ):
     import re
@@ -918,6 +926,14 @@ def export_issues(
     # Filter by owner if provided
     if owner and owner.strip():
         q = q.filter(Issue.issue_owner == owner.strip())
+
+    # Filter by is_food_safety if provided (not "全部" / null)
+    if is_food_safety and is_food_safety.strip():
+        if is_food_safety.strip() == "true":
+            q = q.filter(Issue.is_food_safety == True)
+        elif is_food_safety.strip() == "false":
+            q = q.filter(Issue.is_food_safety == False)
+        # If "全部" or any other value, do not filter
 
     # Filter by start_date
     if start_date and start_date.strip():
@@ -1009,25 +1025,26 @@ def export_issues(
     wb = xlsxwriter.Workbook(str(out_path))
     ws = wb.add_worksheet("Issues")
 
-    # Define column headers - NEW ORDER (A-K):
+    # Define column headers - FINAL ORDER (A-L):
     # A: 问题编号, B: 提交时间, C: 门店, D: 问题状态, E: 问题描述
-    # F: 问题照片, G: 责任部门, H: 门店柜组, I: 整改反馈, J: 整改照片, K: 整改时间
-    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "责任部门", "门店柜组", "整改反馈", "整改照片", "整改时间"]
+    # F: 问题照片, G: 食安属性, H: 责任部门, I: 门店柜组, J: 整改反馈, K: 整改照片, L: 整改时间
+    headers = ["问题编号", "提交时间", "门店", "问题状态", "问题描述", "问题照片", "食安属性", "责任部门", "门店柜组", "整改反馈", "整改照片", "整改时间"]
     for col, header in enumerate(headers):
         ws.write(0, col, header)
 
-    # Column indices - NEW ORDER
+    # Column indices - FINAL ORDER with is_food_safety (食安属性)
     COL_ID = 0           # A: 问题编号
     COL_SUBMITTED_AT = 1 # B: 提交时间
     COL_STORE = 2        # C: 门店
     COL_STATUS = 3       # D: 问题状态
     COL_CONTENT = 4      # E: 问题描述
     COL_ISSUE_PHOTO = 5 # F: 问题照片
-    COL_ISSUE_OWNER = 6 # G: 责任部门
-    COL_STORE_SECTOR = 7 # H: 门店柜组 [NEW]
-    COL_FIX_COMMENTS = 8 # I: 整改反馈 [SHIFTED from H]
-    COL_FIX_PHOTO = 9    # J: 整改照片 [SHIFTED to J]
-    COL_FIX_DATE = 10    # K: 整改时间 [SHIFTED from J]
+    COL_FOOD_SAFETY = 6  # G: 食安属性 [NEW]
+    COL_ISSUE_OWNER = 7 # H: 责任部门 [SHIFTED from G]
+    COL_STORE_SECTOR = 8 # I: 门店柜组 [SHIFTED from H]
+    COL_FIX_COMMENTS = 9 # J: 整改反馈 [SHIFTED from I]
+    COL_FIX_PHOTO = 10    # K: 整改照片 [SHIFTED to K]
+    COL_FIX_DATE = 11    # L: 整改时间 [SHIFTED from K]
 
     # Column widths (in characters)
     ws.set_column(COL_ID, COL_ID, 10)           # 问题编号
@@ -1036,6 +1053,7 @@ def export_issues(
     ws.set_column(COL_STATUS, COL_STATUS, 10)   # 问题状态
     ws.set_column(COL_CONTENT, COL_CONTENT, 45) # 问题描述
     ws.set_column(COL_ISSUE_PHOTO, COL_ISSUE_PHOTO, 38)  # 问题照片
+    ws.set_column(COL_FOOD_SAFETY, COL_FOOD_SAFETY, 14)  # 食安属性 (new column)
     ws.set_column(COL_ISSUE_OWNER, COL_ISSUE_OWNER, 20)  # 责任部门
     ws.set_column(COL_STORE_SECTOR, COL_STORE_SECTOR, 15)  # 门店柜组
     ws.set_column(COL_FIX_COMMENTS, COL_FIX_COMMENTS, 35) # 整改反馈
@@ -1116,7 +1134,11 @@ def export_issues(
 
         ws.write(row_idx, COL_CONTENT, issue.content, border_format)
 
-        # Column G: 责任部门 (issue_owner)
+        # Column G: 食安属性 (is_food_safety) - "食安相关" if True, empty if False/None
+        food_safety_display = "食安相关" if issue.is_food_safety else ""
+        ws.write(row_idx, COL_FOOD_SAFETY, food_safety_display, border_format)
+
+        # Column H: 责任部门 (issue_owner)
         ws.write(row_idx, COL_ISSUE_OWNER, issue.issue_owner or "", border_format)
 
         # Column H: 门店柜组 (store_sector) - leave blank if None/empty
@@ -1163,7 +1185,7 @@ def export_issues(
             except Exception as e:
                 print(f"ERROR adding issue photo for row {row_idx}: {e}")
 
-        # Column G: 整改照片 (Fix Photo) - column 6
+        # Column K: 整改照片 (Fix Photo) - column 10
         if fix_img_bytes:
             try:
                 # Save image to temp file for xlsxwriter

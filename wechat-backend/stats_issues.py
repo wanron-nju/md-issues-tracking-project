@@ -108,11 +108,11 @@ def get_stats(
 
     # Initialize non-store owners
     for owner in non_store_owners:
-        stats[owner] = {'total': 0, 'resolved': 0}
+        stats[owner] = {'total': 0, 'resolved': 0, 'food_safety': 0}
 
     # Initialize store groups
     for store in store_groups:
-        stats[store] = {'total': 0, 'resolved': 0}
+        stats[store] = {'total': 0, 'resolved': 0, 'food_safety': 0}
 
     # Count issues for each group
     for issue in issues:
@@ -123,6 +123,8 @@ def get_stats(
                 stats[owner]['total'] += 1
                 if issue.status == 'completed':
                     stats[owner]['resolved'] += 1
+                if issue.is_food_safety:
+                    stats[owner]['food_safety'] += 1
         else:
             # 门店 issue - group by store name
             store = issue.store
@@ -130,18 +132,22 @@ def get_stats(
                 stats[store]['total'] += 1
                 if issue.status == 'completed':
                     stats[store]['resolved'] += 1
+                if issue.is_food_safety:
+                    stats[store]['food_safety'] += 1
 
     # Convert to list format with resolve rate
     results = []
     for group_name, counts in stats.items():
         total = counts['total']
         resolved = counts['resolved']
+        food_safety = counts['food_safety']
         resolve_rate = (resolved / total * 100) if total > 0 else 0.0
         results.append({
             'group': group_name,
             'total': total,
             'resolved': resolved,
             'unresolved': total - resolved,
+            'food_safety': food_safety,
             'resolve_rate': resolve_rate,
         })
 
@@ -171,23 +177,23 @@ def sort_and_print_stats(
     store_stats.sort(key=lambda x: x['resolve_rate'], reverse=True)
 
     # Print header
-    print("=" * 90)
-    print(f"{'分组':<20} {'总问题数':>10} {'已整改':>10} {'待整改':>10} {'整改率':>12}")
-    print("=" * 90)
+    print("=" * 105)
+    print(f"{'分组':<20} {'总问题数':>10} {'已整改':>10} {'待整改':>10} {'食安相关':>10} {'整改率':>12}")
+    print("=" * 105)
 
     # Print non-门店 owners first
     for s in non_store_stats:
-        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['resolve_rate']:>11.2f}%")
+        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['food_safety']:>10} {s['resolve_rate']:>11.2f}%")
 
     # Separator between sections
     if non_store_stats and store_stats:
-        print("-" * 90)
+        print("-" * 105)
 
     # Print 门店 stores
     for s in store_stats:
-        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['resolve_rate']:>11.2f}%")
+        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['food_safety']:>10} {s['resolve_rate']:>11.2f}%")
 
-    print("=" * 90)
+    print("=" * 105)
 
 
 def parse_date(date_str: str) -> datetime:
@@ -245,12 +251,14 @@ def main():
         # Print summary totals
         total_issues = sum(s['total'] for s in stats)
         total_resolved = sum(s['resolved'] for s in stats)
+        total_food_safety = sum(s['food_safety'] for s in stats)
         overall_rate = (total_resolved / total_issues * 100) if total_issues > 0 else 0.0
 
         print(f"\n总计:")
         print(f"  总问题数: {total_issues}")
         print(f"  已整改: {total_resolved}")
         print(f"  待整改: {total_issues - total_resolved}")
+        print(f"  食安相关: {total_food_safety}")
         print(f"  整体整改率: {overall_rate:.2f}%")
 
     finally:

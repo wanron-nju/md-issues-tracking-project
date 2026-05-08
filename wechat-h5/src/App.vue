@@ -136,6 +136,7 @@ const selectedStore = ref(STORE_EMPTY)
 const content = ref('')
 const issueOwner = ref(ISSUE_OWNER_EMPTY)
 const storeSector = ref('')
+const isFoodSafety = ref(false)  // Food safety relevancy - false = 不相关, true = 相关
 const fileList = ref<any[]>([])
 
 // Watch for issueOwner changes - reset storeSector if owner changes away from '门店'
@@ -223,6 +224,11 @@ const trackingEndDate = ref('')
 const showStartDatePicker = ref(false)
 const showEndDatePicker = ref(false)
 const isExporting = ref(false)
+
+// ============ FOOD SAFETY FILTER STATE ============
+const trackingFoodSafety = ref('全部')  // Options: 全部, 相关, 不相关
+
+const trackingFoodSafetyPicker = ref(false)
 
 // ============ MAINTENANCE PAGE STATE ============
 const maintenanceDate = ref('')
@@ -423,6 +429,8 @@ const handleSubmit = async () => {
   if (issueOwner.value === '门店' && storeSector.value) {
     form.append('store_sector', storeSector.value)
   }
+  // Append is_food_safety flag
+  form.append('is_food_safety', isFoodSafety.value ? 'true' : 'false')
 
   const loading = showLoadingToast({
     message: '正在提交...',
@@ -444,6 +452,7 @@ const handleSubmit = async () => {
     fileList.value = []
     issueOwner.value = ISSUE_OWNER_EMPTY
     storeSector.value = ''
+    isFoodSafety.value = false
   } catch (e) {
     loading.close()
     showFailToast('提交失败，请重试')
@@ -911,6 +920,15 @@ const exportToExcel = async () => {
       params.append('owner', trackingOwner.value)
     }
     
+    // Add food safety filter if not "全部" (only send if explicitly filtering)
+    if (trackingFoodSafety.value !== '全部') {
+      if (trackingFoodSafety.value === '相关') {
+        params.append('is_food_safety', 'true')
+      } else if (trackingFoodSafety.value === '不相关') {
+        params.append('is_food_safety', 'false')
+      }
+    }
+    
     const url = `${API_BASE}/export-issues?${params.toString()}`
     
     // Give the browser 100ms to "paint" the Toast on screen before triggering download
@@ -1145,6 +1163,21 @@ const refreshDiskStats = () => {
               placeholder="请描述现场发现的问题"
             />
 
+            <!-- Food Safety Radio Group -->
+            <van-field
+              label="是否食安相关"
+              label-width="6.5em"
+              class="food-safety-field"
+              disabled
+            >
+              <template #input>
+                <div class="food-safety-radio-group">
+                  <van-radio v-model="isFoodSafety" :name="true" checked-color="#ee0a24">相关</van-radio>
+                  <van-radio v-model="isFoodSafety" :name="false" checked-color="#323233">不相关</van-radio>
+                </div>
+              </template>
+            </van-field>
+
             <van-field
               v-model="issueOwner"
               label="责任部门"
@@ -1277,11 +1310,17 @@ const refreshDiskStats = () => {
             :class="getRectificationCardClass(issue.id)"
           >
             <template #thumb>
-              <img 
-                :src="getImageUrl(issue.issue_photo_url)" 
-                class="issue-photo" 
-                @click="previewIssuePhoto(getImageUrl(issue.issue_photo_url))"
-              />
+              <div class="thumbnail-wrapper">
+                <img 
+                  :src="getImageUrl(issue.issue_photo_url)" 
+                  class="issue-photo" 
+                  @click="previewIssuePhoto(getImageUrl(issue.issue_photo_url))"
+                />
+                <!-- Food Safety Tag - only show if is_food_safety is true -->
+                <span v-if="issue.is_food_safety" class="issue-food-safety-badge">
+                  食安
+                </span>
+              </div>
             </template>
             
             <template #title>
@@ -1480,6 +1519,22 @@ const refreshDiskStats = () => {
               placeholder="请选择门店"
               @click="trackingStorePicker = true"
             />
+
+            <!-- Food Safety Filter Radio Group -->
+            <van-field
+              label="是否食安相关"
+              label-width="6.5em"
+              class="food-safety-filter-field"
+              disabled
+            >
+              <template #input>
+                <div class="food-safety-radio-group">
+                  <van-radio v-model="trackingFoodSafety" name="全部" checked-color="#323233">全部</van-radio>
+                  <van-radio v-model="trackingFoodSafety" name="相关" checked-color="#ee0a24">相关</van-radio>
+                  <van-radio v-model="trackingFoodSafety" name="不相关" checked-color="#323233">不相关</van-radio>
+                </div>
+              </template>
+            </van-field>
 
             <van-field
               v-model="trackingStartDate"
@@ -2276,6 +2331,77 @@ html, body {
   width: 100%;
 }
 
+/* Food safety field - red label for alignment */
+.food-safety-field {
+  padding: 10px 16px !important;
+}
+
+.food-safety-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #ee0a24 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.food-safety-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Food safety radio group - horizontal layout */
+.food-safety-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+/* Food safety radio - all options in black */
+.food-safety-radio-group :deep(.van-radio__label) {
+  color: #323233 !important;
+}
+
+/* Food safety radio - second radio (相关) checked state in red on submission page */
+.food-safety-radio-group :deep(.van-radio:nth-child(2).van-radio--checked .van-radio__icon) {
+  background-color: #ee0a24 !important;
+  border-color: #ee0a24 !important;
+}
+
+/* Food safety filter on tracking page - second radio (相关) checked state in red */
+.food-safety-filter-field .food-safety-radio-group :deep(.van-radio:nth-child(2).van-radio--checked .van-radio__icon) {
+  background-color: #ee0a24 !important;
+  border-color: #ee0a24 !important;
+}
+
+/* Food safety filter field - red label for tracking page */
+.food-safety-filter-field {
+  padding: 10px 16px !important;
+}
+
+.food-safety-filter-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #ee0a24 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.food-safety-filter-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Food safety tag - red background for display */
+.issue-food-safety-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #ee0a24;
+  border-radius: 4px;
+  color: white;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
 /* Rectification store sector grid - 3-row layout */
 .rectification-store-sector-grid {
   display: flex;
@@ -2358,6 +2484,22 @@ html, body {
 .thumbnail-wrapper {
   position: relative;
   display: inline-block;
+  width: 60px;
+  height: 60px;
+}
+
+/* Food safety tag on thumbnail - positioned at bottom of thumbnail */
+.thumbnail-wrapper .issue-food-safety-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  font-size: 10px;
+  padding: 1px 4px;
+  background: #ee0a24;
+  border-radius: 2px;
+  color: white;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .fix-photo-preview {
