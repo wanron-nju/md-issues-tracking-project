@@ -8,7 +8,6 @@ import {
   showSuccessToast, 
   showFailToast,
   showImagePreview,
-  FloatingBubble,
   showConfirmDialog
 } from 'vant'
 
@@ -19,8 +18,24 @@ const API_BASE = import.meta.env.MODE === 'production'
   ? '/api' 
   : 'http://127.0.0.1:8000'
 
+/**
+ * Get full image URL from relative path
+ * @param path - Relative path like '/uploads/filename.jpg' or full URL
+ * @returns Full URL with API base prepended
+ */
+const getImageUrl = (path: string): string => {
+  if (!path) return ''
+  // If already a full URL, return as-is
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path
+  }
+  // Prepend API_BASE for relative paths
+  return `${API_BASE}${path}`
+}
+
 const STORE_EMPTY = ''
 const STORE_ALL = 'All'
+const OWNER_ALL = 'All'
 const STORE_EMPTY_LABEL = '请选择门店'
 
 const STORES: string[] = [
@@ -51,6 +66,9 @@ const STORES: string[] = [
   '1055 - 紫云店',
   '1058 - 学府店',
   '1059 - 怀德店',
+  '1007 - 电力店',
+  '1017 - 政务店',
+  '1067 - 恒立店',
 ]
 
 const trackingStoreColumns = [
@@ -64,9 +82,9 @@ const storeColumns = [
 ]
 
 const statusColumns = [
+  { text: '全部问题状态', value: '全部' },
   { text: '待整改', value: '待整改' },
   { text: '已整改', value: '已整改' },
-  { text: '全部', value: '全部' },
 ]
 
 const deleteStatusColumns = [
@@ -74,54 +92,171 @@ const deleteStatusColumns = [
   { text: '全部', value: '全部' },
 ]
 
+// Issue owner options (责任部门)
+const ISSUE_OWNER_EMPTY = ''
+const ISSUE_OWNER_UNASSIGNED = '<由营运组分派>'
+
+const ISSUE_OWNERS: string[] = [
+  '门店',
+  '采购非食组',
+  '采购农副组',
+  '采购食品组',
+  '品类组',
+  '生鲜部（除水果组外）',
+  '生鲜部（水果组）',
+  '联营绿洁',
+  '营运部',
+  '财务部',
+  '工程部',
+  '企划部',
+  '信息部',
+  '人事部',
+]
+
+// Full list with unassigned (for submission page)
+const issueOwnerColumns = [
+  { text: ISSUE_OWNER_UNASSIGNED, value: ISSUE_OWNER_UNASSIGNED },
+  ...ISSUE_OWNERS.map((s) => ({ text: s, value: s })),
+]
+
+// Filtered list without unassigned (for rectification and assignment pages)
+const issueOwnerColumnsFiltered = ISSUE_OWNERS.map((s) => ({ text: s, value: s }))
+
 // Map Chinese status to English for backend
 const statusMap: Record<string, string> = {
   '已整改': 'completed',
   '全部': 'all',
 }
 
-const currentPage = ref<'home' | 'issue' | 'rectification' | 'tracking' | 'maintenance'>('home')
-const storePickerRef = ref<any>(null)
+const currentPage = ref<'home' | 'issue' | 'rectification' | 'tracking' | 'maintenance' | 'assignment'>('home')
 
-const rectificationStore = ref(STORE_EMPTY)
-const rectificationStorePicker = ref(false)
-const pendingIssues = ref<any[]>([])
-
-const rectifiedCache = ref<Record<number, any>>({})
-
-const isLoadingRectification = ref(false)
-const isSubmittingRectification = ref(false)
-
+// ============ SUBMISSION PAGE STATE ============
 const submitDate = ref('')
 const selectedStore = ref(STORE_EMPTY)
 const content = ref('')
+const issueOwner = ref(ISSUE_OWNER_EMPTY)
+const storeSector = ref('')
+const isFoodSafety = ref(false)  // Food safety relevancy - false = 不相关, true = 相关
 const fileList = ref<any[]>([])
+
+// Watch for issueOwner changes - reset storeSector if owner changes away from '门店'
+const onIssueOwnerChange = (newOwner: string) => {
+  if (newOwner !== '门店') {
+    storeSector.value = ''
+  }
+}
 
 const showCalendar = ref(false)
 const showStorePicker = ref(false)
+const showIssueOwnerPicker = ref(false)
 const isSubmitting = ref(false)
 
-const trackingStatus = ref('待整改')
+// ============ RECTIFICATION PAGE STATE ============
+const rectificationStore = ref(STORE_EMPTY)
+const rectificationStorePicker = ref(false)
+const rectificationOwner = ref(ISSUE_OWNER_EMPTY)
+const rectificationOwnerPicker = ref(false)
+const rectificationStoreSector = ref('全部')
+const pendingIssues = ref<any[]>([])
+const rectifiedCache = ref<Record<number, { file?: any; comments?: string; originalComments?: string }>>({})
+const isLoadingRectification = ref(false)
+const isSubmittingRectification = ref(false)
+
+// Rectification filter validation - both store AND owner required
+const isRectificationFilterValid = computed(() => {
+  return rectificationStore.value && rectificationOwner.value
+})
+
+// Store Sector visibility: show when owner is '门店' AND a specific store is selected
+const showRectificationStoreSector = computed(() => {
+  return rectificationOwner.value === '门店' && !!rectificationStore.value && rectificationStore.value !== STORE_EMPTY
+})
+
+// ============ ASSIGNMENT PAGE STATE ============
+const assignmentDate = ref('')
+const assignmentDatePicker = ref(false)
+const assignmentOwnerPicker = ref(false)
+const unassignedIssues = ref<any[]>([])
+const assignmentCache = ref<Record<number, string>>({})
+const isLoadingAssignment = ref(false)
+const isSubmittingAssignment = ref(false)
+
+// For per-card owner selection
+const showAssignmentOwnerPicker = ref<Record<number, boolean>>({})
+const currentAssigningIssue = ref<number | null>(null)
+
+// ============ TRACKING PAGE STATE ============
+const trackingStatus = ref('全部')
 const trackingStatusPicker = ref(false)
+
+// Status uses computed getter/setter pattern (like Store and Owner)
+const trackingStatusDisplay = computed({
+  get: () => trackingStatus.value === '全部' ? '全部问题状态' : trackingStatus.value,
+  set: (v) => { trackingStatus.value = v }
+})
+
 const trackingStore = ref(STORE_ALL)
 const trackingStorePicker = ref(false)
 
-// Computed property for display text of tracking store
+// Store uses computed getter/setter pattern
 const trackingStoreDisplay = computed({
   get: () => trackingStore.value === STORE_ALL ? '全部门店' : trackingStore.value,
   set: (v) => { trackingStore.value = v }
 })
+
+// Owner uses computed getter/setter pattern
+const trackingOwner = ref(OWNER_ALL)
+const trackingOwnerPicker = ref(false)
+const trackingOwnerDisplay = computed({
+  get: () => trackingOwner.value === OWNER_ALL ? '全部责任部门' : trackingOwner.value,
+  set: (v) => { trackingOwner.value = v }
+})
+
+// Issue owner columns for tracking page (includes "All" option with unassigned)
+const issueOwnerColumnsForTracking = computed(() => [
+  { text: '全部责任部门', value: OWNER_ALL },
+  { text: '<由营运组分派>', value: ISSUE_OWNER_UNASSIGNED },
+  ...ISSUE_OWNERS.map((s) => ({ text: s, value: s })),
+])
+
 const trackingStartDate = ref('')
 const trackingEndDate = ref('')
 const showStartDatePicker = ref(false)
 const showEndDatePicker = ref(false)
 const isExporting = ref(false)
 
+// ============ FOOD SAFETY FILTER STATE ============
+const trackingFoodSafety = ref('全部')  // Options: 全部, 相关, 不相关
+
+const trackingFoodSafetyPicker = ref(false)
+
+// ============ MAINTENANCE PAGE STATE ============
 const maintenanceDate = ref('')
 const maintenanceDatePicker = ref(false)
 const maintenanceStatus = ref('已整改')
 const maintenanceStatusPicker = ref(false)
 const isDeleting = ref(false)
+
+// Disk analytics state
+const diskStats = ref<{ summary: { total: string; used_pct: string; days_left: number }; history: { date: string; issue_count: number; fix_count: number; size: string }[] } | null>(null)
+const isLoadingDiskStats = ref(false)
+
+// ============ REFS ============
+const storePickerRef = ref<any>(null)
+const rectificationPickerRef = ref<any>(null)
+const issueOwnerPickerRef = ref<any>(null)
+const assignmentOwnerPickerRef = ref<any>(null)
+
+// ============ UTILITY FUNCTIONS ============
+/**
+ * Extract clean store name from full store string
+ * e.g., "1010 - 魏村店" -> "魏村店"
+ */
+const getCleanStoreName = (store: string): string => {
+  if (!store) return ''
+  const parts = store.split(' - ')
+  return parts.length > 1 ? parts[1] : store
+}
 
 const getCurrentTimestamp = () => {
   const now = new Date()
@@ -142,26 +277,62 @@ const initToday = () => {
   if (!submitDate.value) {
     submitDate.value = formatDate(new Date())
   }
-  trackingStartDate.value = ''
-  trackingEndDate.value = formatDate(new Date())
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  maintenanceDate.value = formatDate(thirtyDaysAgo)
+  // Set both start and end dates to today by default
+  const today = formatDate(new Date())
+  trackingStartDate.value = today
+  trackingEndDate.value = today
+  // Maintenance date starts empty - user must select a date
+  maintenanceDate.value = ''
+  assignmentDate.value = today
 }
 
 onMounted(() => {
   initToday()
 })
 
+// ============ COMPUTED ============
+// Submission validation - include issueOwner and storeSector (required when owner is '门店')
 const isSubmitDisabled = computed(() => {
+  // If owner is '门店', storeSector must be selected
+  const needsStoreSector = issueOwner.value === '门店'
+  const storeSectorValid = !needsStoreSector || !!storeSector.value
+  
   return (
     !submitDate.value ||
     !selectedStore.value ||
     !content.value.trim() ||
-    fileList.value.length === 0
+    fileList.value.length === 0 ||
+    !issueOwner.value ||
+    !storeSectorValid
   )
 })
 
+// Assignment - check if at least one card has owner selected
+const hasAssignmentChanges = computed(() => {
+  return Object.keys(assignmentCache.value).length > 0
+})
+
+const isAssignmentSubmitDisabled = computed(() => {
+  return !hasAssignmentChanges.value || isSubmittingAssignment.value
+})
+
+// Rectification - check if any card has changes (comments or photo)
+const rectificationChangesCount = computed(() => {
+  return Object.keys(rectifiedCache.value).filter(id => {
+    const cache = rectifiedCache.value[Number(id)]
+    return cache && (cache.comments || cache.file)
+  }).length
+})
+
+const isRectificationSubmitDisabled = computed(() => {
+  return (
+    pendingIssues.value.length === 0 ||
+    rectificationChangesCount.value === 0 ||
+    isSubmittingRectification.value
+  )
+})
+
+// ============ SUBMISSION PAGE HANDLERS ============
 const onConfirmCalendar = (value: Date | Date[]) => {
   const date = Array.isArray(value) ? value[0] : value
   submitDate.value = formatDate(date)
@@ -183,6 +354,114 @@ const onStoreConfirm = ({
   showStorePicker.value = false
 }
 
+const onIssueOwnerConfirm = ({
+  selectedOptions,
+}: {
+  selectedOptions: { text: string; value: string }[]
+}) => {
+  if (selectedOptions && selectedOptions[0]) {
+    issueOwner.value = selectedOptions[0].value
+  }
+  showIssueOwnerPicker.value = false
+}
+
+const handlePickerWheel = (event: WheelEvent) => {
+  event.preventDefault()
+  if (!storePickerRef.value) return
+  
+  const delta = event.deltaY
+  const currentIndex = storeColumns.findIndex(
+    (col) => col.value === selectedStore.value
+  )
+  
+  let newIndex = currentIndex
+  if (delta > 0) {
+    newIndex = Math.min(currentIndex + 1, storeColumns.length - 1)
+  } else {
+    newIndex = Math.max(currentIndex - 1, 0)
+  }
+  
+  if (newIndex !== currentIndex) {
+    selectedStore.value = storeColumns[newIndex].value
+  }
+}
+
+const handleIssueOwnerPickerWheel = (event: WheelEvent) => {
+  event.preventDefault()
+  if (!issueOwnerPickerRef.value) return
+  
+  const delta = event.deltaY
+  const currentIndex = issueOwnerColumns.findIndex(
+    (col) => col.value === issueOwner.value
+  )
+  
+  let newIndex = currentIndex
+  if (delta > 0) {
+    newIndex = Math.min(currentIndex + 1, issueOwnerColumns.length - 1)
+  } else {
+    newIndex = Math.max(currentIndex - 1, 0)
+  }
+  
+  if (newIndex !== currentIndex) {
+    issueOwner.value = issueOwnerColumns[newIndex].value
+  }
+}
+
+const handleSubmit = async () => {
+  if (isSubmitDisabled.value || isSubmitting.value) return
+
+  const photo = fileList.value[0]?.file
+  if (!photo) {
+    showToast('请选择问题照片')
+    return
+  }
+
+  const timestamp = getCurrentTimestamp()
+  const submitDateTime = `${submitDate.value} ${timestamp}`
+
+  const form = new FormData()
+  form.append('submit_date', submitDateTime)
+  form.append('store', selectedStore.value)
+  form.append('content', content.value.trim())
+  form.append('issue_photo', photo)
+  form.append('issue_owner', issueOwner.value)
+  // Only append store_sector if owner is '门店' and sector is selected
+  if (issueOwner.value === '门店' && storeSector.value) {
+    form.append('store_sector', storeSector.value)
+  }
+  // Append is_food_safety flag
+  form.append('is_food_safety', isFoodSafety.value ? 'true' : 'false')
+
+  const loading = showLoadingToast({
+    message: '正在提交...',
+    forbidClick: true,
+    duration: 0,
+  })
+
+  isSubmitting.value = true
+  try {
+    await axios.post(`${API_BASE}/submit-issue`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    
+    loading.close()
+    showSuccessToast('提交成功！')
+    
+    // Retention: Keep Date and Store, reset others
+    content.value = ''
+    fileList.value = []
+    issueOwner.value = ISSUE_OWNER_EMPTY
+    storeSector.value = ''
+    isFoodSafety.value = false
+  } catch (e) {
+    loading.close()
+    showFailToast('提交失败，请重试')
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+// ============ NAVIGATION ============
 const goIssueSubmission = () => {
   currentPage.value = 'issue'
 }
@@ -193,9 +472,8 @@ const goHome = () => {
 
 const goMaintenance = () => {
   currentPage.value = 'maintenance'
+  fetchDiskStats()
 }
-
-const rectificationPickerRef = ref<any>(null)
 
 const goRectification = () => {
   currentPage.value = 'rectification'
@@ -205,6 +483,11 @@ const goTracking = () => {
   currentPage.value = 'tracking'
 }
 
+const goAssignment = () => {
+  currentPage.value = 'assignment'
+}
+
+// ============ RECTIFICATION PAGE HANDLERS ============
 const handleRectificationPickerWheel = (event: WheelEvent) => {
   event.preventDefault()
   if (!rectificationPickerRef.value) return
@@ -227,21 +510,46 @@ const handleRectificationPickerWheel = (event: WheelEvent) => {
 }
 
 const fetchPendingIssues = async () => {
-  if (!rectificationStore.value) {
-    showToast('请先选择门店')
+  if (!rectificationOwner.value) {
+    showToast('请先选择责任部门')
     return
   }
   
   isLoadingRectification.value = true
   try {
+    const params: any = {}
+    // Add owner filter (required)
+    params.owner = rectificationOwner.value
+    
+    // Add store filter only if selected (optional)
+    if (rectificationStore.value) {
+      params.store = rectificationStore.value
+    }
+    
+    // Add store_sector filter only if owner is '门店' AND a specific sector is selected
+    // If '全部' is selected, do not include the parameter (return all sectors)
+    if (rectificationOwner.value === '门店' && rectificationStoreSector.value && rectificationStoreSector.value !== '全部') {
+      params.store_sector = rectificationStoreSector.value
+    }
+    
     const response = await axios.get(`${API_BASE}/issues/pending`, {
-      params: { store: rectificationStore.value }
+      params
     })
     pendingIssues.value = response.data
     rectifiedCache.value = {}
     
+    // Pre-populate cache with original fix_comments for display
+    pendingIssues.value.forEach((issue: any) => {
+      if (issue.fix_comments) {
+        rectifiedCache.value[issue.id] = {
+          comments: issue.fix_comments,
+          originalComments: issue.fix_comments
+        }
+      }
+    })
+    
     if (pendingIssues.value.length === 0) {
-      showToast('该门店暂无待整改问题')
+      showToast('暂无待整改问题')
     }
   } catch (e) {
     showToast('获取待整改问题失败')
@@ -258,39 +566,88 @@ const onRectificationStoreConfirm = ({
 }) => {
   if (selectedOptions && selectedOptions[0]) {
     rectificationStore.value = selectedOptions[0].value
+    // Reset storeSector when store changes
+    rectificationStoreSector.value = ''
     pendingIssues.value = []
     rectifiedCache.value = {}
   }
   rectificationStorePicker.value = false
 }
 
+const onRectificationOwnerConfirm = ({
+  selectedOptions,
+}: {
+  selectedOptions: { text: string; value: string }[]
+}) => {
+  if (selectedOptions && selectedOptions[0]) {
+    rectificationOwner.value = selectedOptions[0].value
+    // Reset storeSector when owner changes (even if still '门店', new selection means new context)
+    rectificationStoreSector.value = ''
+    pendingIssues.value = []
+    rectifiedCache.value = {}
+  }
+  rectificationOwnerPicker.value = false
+}
+
+// Dynamic card background based on changes
+// Only trigger colored background if user MANUALLY changed from original
+const getRectificationCardClass = (issueId: number): string => {
+  const cache = rectifiedCache.value[issueId]
+  if (!cache) return ''
+  if (cache.file) return 'issue-fixed-photo'
+  // Orange if comments exist and differ from original (or original was empty/undefined)
+  if (cache.comments) {
+    // If originalComments is undefined, it started as empty, so any non-empty comments = changed
+    if (cache.originalComments === undefined || cache.comments !== cache.originalComments) {
+      return 'issue-comments-changed'
+    }
+  }
+  return ''
+}
+
 const isIssueReady = (issueId: number) => {
-  return !!rectifiedCache.value[issueId]
+  const cache = rectifiedCache.value[issueId]
+  return !!(cache && (cache.file || cache.comments))
 }
 
 const readyCount = computed(() => {
-  return Object.keys(rectifiedCache.value).length
-})
-
-const isRectificationSubmitDisabled = computed(() => {
-  return (
-    pendingIssues.value.length === 0 ||
-    readyCount.value === 0 ||
-    isSubmittingRectification.value
-  )
+  return Object.keys(rectifiedCache.value).filter(id => {
+    const cache = rectifiedCache.value[Number(id)]
+    return cache && (cache.file || cache.comments)
+  }).length
 })
 
 const handleFixPhotoUpload = (issueId: number, file: any) => {
+  if (!rectifiedCache.value[issueId]) {
+    rectifiedCache.value[issueId] = {}
+  }
   if (file) {
-    rectifiedCache.value[issueId] = file
+    rectifiedCache.value[issueId].file = file
   } else {
-    delete rectifiedCache.value[issueId]
+    delete rectifiedCache.value[issueId].file
+  }
+}
+
+const handleFixCommentsChange = (issueId: number, comments: string) => {
+  if (!rectifiedCache.value[issueId]) {
+    rectifiedCache.value[issueId] = {}
+  }
+  if (comments && comments.trim()) {
+    rectifiedCache.value[issueId].comments = comments.trim()
+  } else {
+    delete rectifiedCache.value[issueId].comments
   }
 }
 
 const deleteFixPhoto = (issueId: number, event: Event) => {
   event.stopPropagation()
-  delete rectifiedCache.value[issueId]
+  if (rectifiedCache.value[issueId]) {
+    delete rectifiedCache.value[issueId].file
+    // If no comments either, remove the entry
+    if (!rectifiedCache.value[issueId].comments) {
+      delete rectifiedCache.value[issueId]
+    }
+  }
 }
 
 const previewIssuePhoto = (url: string) => {
@@ -302,7 +659,7 @@ const previewIssuePhoto = (url: string) => {
 }
 
 const previewFixPhoto = (issueId: number) => {
-  const file = rectifiedCache.value[issueId]
+  const file = rectifiedCache.value[issueId]?.file
   if (file && file.objectUrl) {
     showImagePreview({
       images: [file.objectUrl],
@@ -317,20 +674,39 @@ const submitRectifications = async () => {
 
   const form = new FormData()
   
-  const issueIds = Object.keys(rectifiedCache.value).map(Number)
+  // Get all issues with changes (file OR comments)
+  const issueIds = Object.keys(rectifiedCache.value)
+    .filter(id => {
+      const cache = rectifiedCache.value[Number(id)]
+      return cache && (cache.file || cache.comments)
+    })
+    .map(Number)
   
   if (issueIds.length === 0) {
-    showToast('请先上传整改照片')
+    showToast('请先添加整改照片或回复')
     return
   }
   
+  // Add IDs
   issueIds.forEach(id => {
-    const file = rectifiedCache.value[id]
-    if (file && file.file) {
-      form.append('ids', id.toString())
-      form.append('fix_photos', file.file)
+    form.append('ids', id.toString())
+  })
+  
+  // Add photos with key-based approach: file_{id}
+  // Only append if file exists - backend will look for file_{id} keys
+  issueIds.forEach(id => {
+    const cache = rectifiedCache.value[id]
+    if (cache && cache.file && cache.file.file) {
+      form.append(`file_${id}`, cache.file.file)
     }
   })
+  
+  // Add comments as JSON array (null for issues without comments)
+  const commentsList: (string | null)[] = issueIds.map(id => {
+    const cache = rectifiedCache.value[id]
+    return cache?.comments || null
+  })
+  form.append('fix_comments', JSON.stringify(commentsList))
 
   const loading = showLoadingToast({
     message: '正在提交...',
@@ -357,12 +733,95 @@ const submitRectifications = async () => {
   }
 }
 
+// ============ ASSIGNMENT PAGE HANDLERS ============
+const onAssignmentDateConfirm = (value: Date | Date[]) => {
+  const date = Array.isArray(value) ? value[0] : value
+  assignmentDate.value = formatDate(date)
+  assignmentDatePicker.value = false
+}
+
+const fetchUnassignedIssues = async () => {
+  isLoadingAssignment.value = true
+  try {
+    const params: any = {}
+    // For backlog logic: only use end_date to get all issues up to and including that date
+    if (assignmentDate.value) {
+      params.end_date = assignmentDate.value
+    }
+    
+    const response = await axios.get(`${API_BASE}/api/issues/unassigned`, {
+      params
+    })
+    unassignedIssues.value = response.data
+    assignmentCache.value = {}
+    
+    if (unassignedIssues.value.length === 0) {
+      showToast('暂无待分配问题')
+    }
+  } catch (e) {
+    showToast('获取待分配问题失败')
+    console.error('Failed to fetch unassigned issues:', e)
+  } finally {
+    isLoadingAssignment.value = false
+  }
+}
+
+const handleAssignmentOwnerChange = (issueId: number, owner: string) => {
+  if (owner) {
+    assignmentCache.value[issueId] = owner
+  } else {
+    delete assignmentCache.value[issueId]
+  }
+}
+
+const getAssignmentCardClass = (issueId: number): string => {
+  if (assignmentCache.value[issueId]) {
+    return 'issue-assigned'
+  }
+  return ''
+}
+
+const submitAssignments = async () => {
+  if (isAssignmentSubmitDisabled.value) return
+
+  const assignments = Object.entries(assignmentCache.value).map(([id, owner]) => ({
+    id: Number(id),
+    issue_owner: owner
+  }))
+  
+  const loading = showLoadingToast({
+    message: '正在提交...',
+    forbidClick: true,
+    duration: 0,
+  })
+
+  isSubmittingAssignment.value = true
+  try {
+    await axios.post(`${API_BASE}/issues/assignments`, {
+      assignments
+    })
+    
+    loading.close()
+    showSuccessToast('提交成功！')
+    
+    assignmentCache.value = {}
+    await fetchUnassignedIssues()
+  } catch (e) {
+    loading.close()
+    showFailToast('提交失败，请重试')
+  } finally {
+    isSubmittingAssignment.value = false
+  }
+}
+
+// ============ TRACKING PAGE HANDLERS ============
 const onTrackingStatusConfirm = ({
   selectedOptions,
 }: {
   selectedOptions: { text: string; value: string }[]
 }) => {
   if (selectedOptions && selectedOptions[0]) {
+    // Update the value (computed setter will update display)
     trackingStatus.value = selectedOptions[0].value
   }
   trackingStatusPicker.value = false
@@ -377,6 +836,18 @@ const onTrackingStoreConfirm = ({
     trackingStore.value = selectedOptions[0].value
   }
   trackingStorePicker.value = false
+}
+
+const onTrackingOwnerConfirm = ({
+  selectedOptions,
+}: {
+  selectedOptions: { text: string; value: string }[]
+}) => {
+  if (selectedOptions && selectedOptions[0]) {
+    // Update the value (computed setter will update display)
+    trackingOwner.value = selectedOptions[0].value
+  }
+  trackingOwnerPicker.value = false
 }
 
 const onConfirmStartDate = (value: Date | Date[]) => {
@@ -394,18 +865,45 @@ const onConfirmEndDate = (value: Date | Date[]) => {
 const exportToExcel = async () => {
   if (isExporting.value) return
   
+  // Check if date span exceeds 3 days
+  if (trackingStartDate.value && trackingEndDate.value) {
+    const start = new Date(trackingStartDate.value)
+    const end = new Date(trackingEndDate.value)
+    const daySpan = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+    
+    // If span is 3 or more days difference (spans 4+ calendar days), show warning dialog
+    if (daySpan >= 3) {
+      try {
+        await showConfirmDialog({
+          title: '日期跨度过长',
+          message: '日期跨度过长：为了确保系统稳定，单次导出请不要超过3天。如需更多数据，请分批导出。',
+          confirmButtonText: '确定',
+          showCancelButton: false,
+        })
+      } catch (e) {
+        // User confirmed, just return without exporting
+        return
+      }
+      return
+    }
+  }
+  
   isExporting.value = true
   
+  // Show loading toast first (before building URL)
   const loading = showLoadingToast({
-    message: '正在导出...',
+    message: '正在生成报表...\n数据较多时可能需要10秒左右，请勿关闭页面。',
     forbidClick: true,
-    duration: 0,
+    duration: 10000,
   })
   
   try {
     const params = new URLSearchParams()
+    // Extract 4-digit store code using regex (e.g., "1042 - 农发区店" -> "1042")
     if (trackingStore.value !== STORE_ALL) {
-      params.append('store', trackingStore.value)
+      const match = trackingStore.value.match(/^(\d{4})/)
+      const storeCode = match ? match[1] : trackingStore.value
+      params.append('store', storeCode)
     }
     if (trackingStartDate.value) {
       params.append('start_date', trackingStartDate.value)
@@ -413,22 +911,49 @@ const exportToExcel = async () => {
     if (trackingEndDate.value) {
       params.append('end_date', trackingEndDate.value)
     }
+    
+    // Use the backend value directly (trackingStatus.value)
     params.append('status', trackingStatus.value)
+    
+    // Add owner filter if not "All"
+    if (trackingOwner.value !== OWNER_ALL) {
+      params.append('owner', trackingOwner.value)
+    }
+    
+    // Add food safety filter if not "全部" (only send if explicitly filtering)
+    if (trackingFoodSafety.value !== '全部') {
+      if (trackingFoodSafety.value === '相关') {
+        params.append('is_food_safety', 'true')
+      } else if (trackingFoodSafety.value === '不相关') {
+        params.append('is_food_safety', 'false')
+      }
+    }
     
     const url = `${API_BASE}/export-issues?${params.toString()}`
     
-    window.open(url, '_blank')
+    // Give the browser 100ms to "paint" the Toast on screen before triggering download
+    setTimeout(() => {
+      window.location.href = url
+    }, 100)
     
-    loading.close()
-    showSuccessToast('导出成功！')
+    // Note: We don't close the loading toast here because:
+    // 1. The server takes 8-10 seconds to generate the Excel
+    // 2. The browser will handle the download response
+    // 3. The toast will auto-dismiss after 10 seconds (duration: 10000)
+    
+    // Reset exporting flag after a delay to allow new exports
+    setTimeout(() => {
+      isExporting.value = false
+    }, 15000)
+    
   } catch (e) {
     loading.close()
     showFailToast('导出失败，请重试')
-  } finally {
     isExporting.value = false
   }
 }
 
+// ============ MAINTENANCE PAGE HANDLERS ============
 const onMaintenanceDateConfirm = (value: Date | Date[]) => {
   const date = Array.isArray(value) ? value[0] : value
   maintenanceDate.value = formatDate(date)
@@ -472,7 +997,6 @@ const handleDeleteIssues = async () => {
       duration: 0,
     })
     
-    // Map Chinese status to English for backend
     const statusFilter = statusMap[maintenanceStatus.value] || 'all'
     
     const response = await axios.post(`${API_BASE}/delete-issues`, {
@@ -491,68 +1015,29 @@ const handleDeleteIssues = async () => {
   }
 }
 
-const handlePickerWheel = (event: WheelEvent) => {
-  event.preventDefault()
-  if (!storePickerRef.value) return
-  
-  const delta = event.deltaY
-  const currentIndex = storeColumns.findIndex(
-    (col) => col.value === selectedStore.value
-  )
-  
-  let newIndex = currentIndex
-  if (delta > 0) {
-    newIndex = Math.min(currentIndex + 1, storeColumns.length - 1)
-  } else {
-    newIndex = Math.max(currentIndex - 1, 0)
-  }
-  
-  if (newIndex !== currentIndex) {
-    selectedStore.value = storeColumns[newIndex].value
+// ============ DISK ANALYTICS HANDLERS ============
+const fetchDiskStats = async () => {
+  isLoadingDiskStats.value = true
+  try {
+    const response = await axios.get(`${API_BASE}/api/admin/maintenance/stats`)
+    diskStats.value = response.data
+  } catch (e) {
+    console.error('Failed to fetch disk stats:', e)
+    showToast('获取磁盘统计失败')
+  } finally {
+    isLoadingDiskStats.value = false
   }
 }
 
-const handleSubmit = async () => {
-  if (isSubmitDisabled.value || isSubmitting.value) return
+// Fetch disk stats when entering maintenance page
+const handleEnterMaintenance = () => {
+  currentPage.value = 'maintenance'
+  fetchDiskStats()
+}
 
-  const photo = fileList.value[0]?.file
-  if (!photo) {
-    showToast('请选择问题照片')
-    return
-  }
-
-  const timestamp = getCurrentTimestamp()
-  const submitDateTime = `${submitDate.value} ${timestamp}`
-
-  const form = new FormData()
-  form.append('submit_date', submitDateTime)
-  form.append('store', selectedStore.value)
-  form.append('content', content.value.trim())
-  form.append('issue_photo', photo)
-
-  const loading = showLoadingToast({
-    message: '正在提交...',
-    forbidClick: true,
-    duration: 0,
-  })
-
-  isSubmitting.value = true
-  try {
-    await axios.post(`${API_BASE}/submit-issue`, form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    
-    loading.close()
-    showSuccessToast('提交成功！')
-    
-    content.value = ''
-    fileList.value = []
-  } catch (e) {
-    loading.close()
-    showFailToast('提交失败，请重试')
-  } finally {
-    isSubmitting.value = false
-  }
+// Refresh disk stats
+const refreshDiskStats = () => {
+  fetchDiskStats()
 }
 </script>
 
@@ -566,18 +1051,22 @@ const handleSubmit = async () => {
 
     <div v-else class="sticky-header">
       <div class="home-button" @click="goHome">
-        <van-icon 
-          name="wap-home-o" 
-          size="22" 
-        />
+        <van-icon name="wap-home-o" size="22" />
         <span class="home-button-text">返回</span>
       </div>
       <h1 class="header-title">
-        {{ currentPage === 'issue' ? '问题提交' : currentPage === 'rectification' ? '整改反馈' : currentPage === 'tracking' ? '状态追踪' : '数据维护' }}
+        {{ 
+          currentPage === 'issue' ? '问题提交' : 
+          currentPage === 'rectification' ? '整改反馈' : 
+          currentPage === 'tracking' ? '状态追踪' : 
+          currentPage === 'assignment' ? '责任分派' : 
+          '数据维护' 
+        }}
       </h1>
     </div>
 
     <div class="page-body">
+      <!-- ============ HOME PAGE ============ -->
       <template v-if="currentPage === 'home'">
         <section class="home-hero">
           <h1 class="home-title">明都巡店问题追踪系统</h1>
@@ -586,7 +1075,7 @@ const handleSubmit = async () => {
 
         <section class="menu-card">
           <p class="menu-intro">
-            请选择需要的操作：问题提交、整改反馈或状态追踪。
+            请选择需要的操作：问题提交、责任分派、整改反馈或状态追踪。
           </p>
         </section>
 
@@ -599,6 +1088,16 @@ const handleSubmit = async () => {
             @click="goIssueSubmission"
           >
             <span class="menu-button-title">问题提交</span>
+          </van-button>
+
+          <van-button
+            block
+            round
+            size="large"
+            class="menu-button btn-blue"
+            @click="goAssignment"
+          >
+            <span class="menu-button-title">责任分派</span>
           </van-button>
 
           <van-button
@@ -623,12 +1122,14 @@ const handleSubmit = async () => {
         </section>
       </template>
 
+      <!-- ============ ISSUE SUBMISSION PAGE ============ -->
       <template v-else-if="currentPage === 'issue'">
         <section class="form-card">
           <van-cell-group inset>
             <van-field
               v-model="submitDate"
               label="提交日期"
+              label-width="6.5em"
               readonly
               clickable
               placeholder="请选择日期"
@@ -642,6 +1143,7 @@ const handleSubmit = async () => {
             <van-field
               v-model="selectedStore"
               label="门店"
+              label-width="6.5em"
               readonly
               is-link
               clickable
@@ -653,6 +1155,7 @@ const handleSubmit = async () => {
               v-model="content"
               type="textarea"
               label="问题描述"
+              label-width="6.5em"
               rows="6"
               autosize
               maxlength="500"
@@ -660,14 +1163,64 @@ const handleSubmit = async () => {
               placeholder="请描述现场发现的问题"
             />
 
-            <div class="uploader-row">
-              <div class="uploader-label">问题照片</div>
-              <van-uploader
-                v-model="fileList"
-                :max-count="1"
-                accept="image/*"
-              />
-            </div>
+            <!-- Food Safety Radio Group -->
+            <van-field
+              label="是否食安相关"
+              label-width="6.5em"
+              class="food-safety-field"
+              disabled
+            >
+              <template #input>
+                <div class="food-safety-radio-group">
+                  <van-radio v-model="isFoodSafety" :name="true" checked-color="#ee0a24">相关</van-radio>
+                  <van-radio v-model="isFoodSafety" :name="false" checked-color="#323233">不相关</van-radio>
+                </div>
+              </template>
+            </van-field>
+
+            <van-field
+              v-model="issueOwner"
+              label="责任部门"
+              label-width="6.5em"
+              readonly
+              is-link
+              clickable
+              placeholder="请选择责任部门"
+              @click="showIssueOwnerPicker = true"
+            />
+
+            <!-- Store Sector Radio Group - only visible when owner is '门店' -->
+            <van-field
+              v-if="issueOwner === '门店'"
+              label="选择柜组"
+              label-width="6.5em"
+              class="store-sector-field"
+              disabled
+            >
+              <template #input>
+                <div class="store-sector-grid">
+                  <van-radio v-model="storeSector" name="食品">食品</van-radio>
+                  <van-radio v-model="storeSector" name="非食">非食</van-radio>
+                  <van-radio v-model="storeSector" name="生鲜">生鲜</van-radio>
+                  <van-radio v-model="storeSector" name="其他">其他</van-radio>
+                </div>
+              </template>
+            </van-field>
+
+            <van-field
+              label="问题照片"
+              label-width="6.5em"
+            >
+              <template #input>
+                <div class="uploader-wrapper">
+                  <van-uploader
+                    v-model="fileList"
+                    :max-count="1"
+                    accept="image/*"
+                  />
+                </div>
+              </template>
+            </van-field>
           </van-cell-group>
 
           <div class="submit-wrapper">
@@ -685,18 +1238,54 @@ const handleSubmit = async () => {
         </section>
       </template>
 
+      <!-- ============ RECTIFICATION PAGE ============ -->
       <template v-else-if="currentPage === 'rectification'">
         <section class="form-card">
           <van-cell-group inset>
+            <van-field
+              v-model="rectificationOwner"
+              label="责任部门"
+              readonly
+              is-link
+              clickable
+              placeholder="请选择责任部门"
+              @click="rectificationOwnerPicker = true"
+            />
+
             <van-field
               v-model="rectificationStore"
               label="门店"
               readonly
               is-link
               clickable
-              placeholder="请选择门店"
+              placeholder="请选择门店（可留空）"
               @click="rectificationStorePicker = true"
             />
+
+            <!-- Store Sector Radio Group - only visible when owner is '门店' AND a specific store is selected -->
+            <van-field
+              v-if="showRectificationStoreSector"
+              label="选择柜组"
+              label-width="6.5em"
+              class="store-sector-field"
+              disabled
+            >
+              <template #input>
+                <div class="rectification-store-sector-grid">
+                  <div class="sector-row-full">
+                    <van-radio v-model="rectificationStoreSector" name="全部">全部</van-radio>
+                  </div>
+                  <div class="sector-row-two">
+                    <van-radio v-model="rectificationStoreSector" name="食品">食品</van-radio>
+                    <van-radio v-model="rectificationStoreSector" name="非食">非食</van-radio>
+                  </div>
+                  <div class="sector-row-two">
+                    <van-radio v-model="rectificationStoreSector" name="生鲜">生鲜</van-radio>
+                    <van-radio v-model="rectificationStoreSector" name="其他">其他</van-radio>
+                  </div>
+                </div>
+              </template>
+            </van-field>
           </van-cell-group>
 
           <div class="submit-wrapper">
@@ -705,7 +1294,7 @@ const handleSubmit = async () => {
               round
               class="btn-submit btn-blue"
               :loading="isLoadingRectification"
-              :disabled="!rectificationStore"
+              :disabled="!rectificationOwner"
               @click="fetchPendingIssues"
             >
               获取待整改问题
@@ -718,19 +1307,32 @@ const handleSubmit = async () => {
             v-for="issue in pendingIssues"
             :key="issue.id"
             class="issue-card"
-            :class="{ 'issue-ready': isIssueReady(issue.id) }"
+            :class="getRectificationCardClass(issue.id)"
           >
             <template #thumb>
-              <img 
-                :src="issue.issue_photo_url" 
-                class="issue-photo" 
-                @click="previewIssuePhoto(issue.issue_photo_url)"
-              />
+              <div class="thumbnail-wrapper">
+                <img 
+                  :src="getImageUrl(issue.issue_photo_url)" 
+                  class="issue-photo" 
+                  @click="previewIssuePhoto(getImageUrl(issue.issue_photo_url))"
+                />
+                <!-- Food Safety Tag - only show if is_food_safety is true -->
+                <span v-if="issue.is_food_safety" class="issue-food-safety-badge">
+                  食安
+                </span>
+              </div>
             </template>
             
             <template #title>
-              <div class="issue-title-row">
+              <!-- Row 1: Date -->
+              <div class="issue-header-row">
                 <span class="issue-date">{{ issue.submitted_at }}</span>
+              </div>
+              <!-- Row 2: Tags -->
+              <div class="issue-tags-row">
+                <span class="issue-store">{{ getCleanStoreName(issue.store) }}</span>
+                <span class="issue-owner-badge">{{ issue.issue_owner }}</span>
+                <span v-if="issue.store_sector" class="issue-sector-badge">{{ issue.store_sector }}</span>
               </div>
             </template>
 
@@ -741,57 +1343,171 @@ const handleSubmit = async () => {
             </template>
 
             <template #footer>
-              <div class="issue-fix-photo-left">
-                <template v-if="isIssueReady(issue.id)">
-                  <div class="thumbnail-wrapper" @click="previewFixPhoto(issue.id)">
-                    <img 
-                      :src="rectifiedCache[issue.id]?.objectUrl" 
-                      class="fix-photo-preview"
-                    />
-                    <van-icon 
-                      name="clear" 
-                      class="delete-icon"
-                      @click="(e) => deleteFixPhoto(issue.id, e)"
-                    />
-                  </div>
-                </template>
-                <template v-else>
-                  <van-uploader
-                    :model-value="rectifiedCache[issue.id] ? [rectifiedCache[issue.id]] : []"
-                    :max-count="1"
-                    accept="image/*"
-                    @update:model-value="(files) => handleFixPhotoUpload(issue.id, files?.[0])"
-                  >
-                    <van-button size="small" class="btn-light-grey-blue btn-press-effect">
-                      上传整改照片
-                    </van-button>
-                  </van-uploader>
-                </template>
+              <div class="rectification-content">
+                <!-- Fix Comments -->
+                <van-field
+                  :model-value="rectifiedCache[issue.id]?.comments || ''"
+                  type="textarea"
+                  rows="2"
+                  autosize
+                  maxlength="500"
+                  placeholder="整改回复（选填）"
+                  class="fix-comments-field"
+                  @update:model-value="(v) => handleFixCommentsChange(issue.id, v || '')"
+                />
+                
+                <!-- Fix Photo -->
+                <div class="issue-fix-photo-left">
+                  <template v-if="rectifiedCache[issue.id]?.file">
+                    <div class="thumbnail-wrapper" @click="previewFixPhoto(issue.id)">
+                      <img 
+                        :src="rectifiedCache[issue.id]?.file?.objectUrl" 
+                        class="fix-photo-preview"
+                      />
+                      <van-icon 
+                        name="clear" 
+                        class="delete-icon"
+                        @click="(e) => deleteFixPhoto(issue.id, e)"
+                      />
+                    </div>
+                  </template>
+                  <template v-else>
+                    <van-uploader
+                      :model-value="rectifiedCache[issue.id]?.file ? [rectifiedCache[issue.id].file] : []"
+                      :max-count="1"
+                      accept="image/*"
+                      @update:model-value="(files) => handleFixPhotoUpload(issue.id, files?.[0])"
+                    >
+                      <van-button size="small" class="btn-light-grey-blue btn-press-effect">
+                        上传整改照片
+                      </van-button>
+                    </van-uploader>
+                  </template>
+                </div>
               </div>
             </template>
           </van-card>
 
           <div
-            v-if="readyCount > 0"
+            v-if="rectificationChangesCount > 0"
             class="custom-fab btn-press-effect"
             @click="submitRectifications"
           >
-            上传整改
+            确认提交
           </div>
         </section>
       </template>
 
+      <!-- ============ ASSIGNMENT PAGE ============ -->
+      <template v-else-if="currentPage === 'assignment'">
+        <section class="form-card">
+          <van-cell-group inset>
+            <van-field
+              v-model="assignmentDate"
+              label="日期截至"
+              readonly
+              clickable
+              placeholder="可以留空"
+              @click="assignmentDatePicker = true"
+            >
+              <template #right-icon>
+                <van-icon name="calendar-o" class="field-icon" />
+              </template>
+            </van-field>
+          </van-cell-group>
+
+          <div class="submit-wrapper">
+            <van-button
+              block
+              round
+              class="btn-submit btn-blue"
+              :loading="isLoadingAssignment"
+              @click="fetchUnassignedIssues"
+            >
+              获取尚无责任归属的问题
+            </van-button>
+          </div>
+        </section>
+
+        <section v-if="unassignedIssues.length > 0" class="issues-list">
+          <van-card
+            v-for="issue in unassignedIssues"
+            :key="issue.id"
+            class="issue-card"
+            :class="getAssignmentCardClass(issue.id)"
+          >
+            <template #thumb>
+              <img 
+                :src="getImageUrl(issue.issue_photo_url)" 
+                class="issue-photo" 
+                @click="previewIssuePhoto(getImageUrl(issue.issue_photo_url))"
+              />
+            </template>
+            
+            <template #title>
+              <!-- Row 1: Date -->
+              <div class="issue-header-row">
+                <span class="issue-date">{{ issue.submitted_at }}</span>
+              </div>
+              <!-- Row 2: Tags -->
+              <div class="issue-tags-row">
+                <span class="issue-store">{{ getCleanStoreName(issue.store) }}</span>
+              </div>
+            </template>
+
+            <template #desc>
+              <div class="issue-desc-text">
+                {{ issue.content }}
+              </div>
+            </template>
+
+            <template #footer>
+              <van-field
+                :model-value="assignmentCache[issue.id] || ''"
+                label="分派责任部门"
+                readonly
+                is-link
+                clickable
+                placeholder="选择责任部门"
+                class="assignment-field"
+                @click="() => { currentAssigningIssue = issue.id; assignmentOwnerPicker = true }"
+              />
+            </template>
+          </van-card>
+
+          <div
+            v-if="hasAssignmentChanges"
+            class="custom-fab btn-press-effect"
+            @click="submitAssignments"
+          >
+            提交分派
+          </div>
+        </section>
+      </template>
+
+      <!-- ============ TRACKING PAGE ============ -->
       <template v-else-if="currentPage === 'tracking'">
         <section class="form-card">
           <van-cell-group inset>
             <van-field
-              v-model="trackingStatus"
+              v-model="trackingStatusDisplay"
               label="问题状态"
               readonly
               is-link
               clickable
               placeholder="请选择状态"
               @click="trackingStatusPicker = true"
+            />
+
+            <!-- Owner filter ABOVE Store filter -->
+            <van-field
+              v-model="trackingOwnerDisplay"
+              label="责任部门"
+              readonly
+              is-link
+              clickable
+              placeholder="请选择责任部门"
+              @click="trackingOwnerPicker = true"
             />
 
             <van-field
@@ -803,6 +1519,22 @@ const handleSubmit = async () => {
               placeholder="请选择门店"
               @click="trackingStorePicker = true"
             />
+
+            <!-- Food Safety Filter Radio Group -->
+            <van-field
+              label="是否食安相关"
+              label-width="6.5em"
+              class="food-safety-filter-field"
+              disabled
+            >
+              <template #input>
+                <div class="food-safety-radio-group">
+                  <van-radio v-model="trackingFoodSafety" name="全部" checked-color="#323233">全部</van-radio>
+                  <van-radio v-model="trackingFoodSafety" name="相关" checked-color="#ee0a24">相关</van-radio>
+                  <van-radio v-model="trackingFoodSafety" name="不相关" checked-color="#323233">不相关</van-radio>
+                </div>
+              </template>
+            </van-field>
 
             <van-field
               v-model="trackingStartDate"
@@ -845,15 +1577,74 @@ const handleSubmit = async () => {
         </section>
       </template>
 
+      <!-- ============ MAINTENANCE PAGE ============ -->
       <template v-else-if="currentPage === 'maintenance'">
-        <section class="form-card">
+        <!-- Section A: Disk Summary Card -->
+        <section class="disk-summary-card">
+          <div class="disk-summary-header">
+            <span class="disk-summary-title">磁盘占用统计</span>
+            <van-icon 
+              name="replay" 
+              class="disk-refresh-icon" 
+              @click="refreshDiskStats"
+            />
+          </div>
+          <div v-if="isLoadingDiskStats" class="disk-summary-loading">
+            正在加载...
+          </div>
+          <div v-else-if="diskStats" class="disk-summary-content">
+            <div class="disk-summary-line">
+              <span class="disk-summary-text">
+                <strong>磁盘:</strong> {{ diskStats.summary.total }} | 
+                <strong>占用:</strong> {{ diskStats.summary.used_pct }} | 
+                <strong>预计可用:</strong> {{ diskStats.summary.days_left }} 天
+              </span>
+            </div>
+          </div>
+          <div v-else class="disk-summary-loading">
+            暂无数据
+          </div>
+        </section>
+
+        <!-- Section B: Daily Analytics Table -->
+        <section v-if="diskStats && diskStats.history && diskStats.history.length > 0" class="disk-table-section">
+          <div class="disk-table-header">
+            <span class="disk-table-title">每日详情</span>
+          </div>
+          <div class="disk-table-container">
+            <table class="disk-table">
+              <thead>
+                <tr>
+                  <th class="col-date">日期</th>
+                  <th class="col-count">问题个数</th>
+                  <th class="col-count">解决个数</th>
+                  <th class="col-size">占用空间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr 
+                  v-for="(row, index) in diskStats.history" 
+                  :key="row.date"
+                  :class="{ 'row-odd': index % 2 === 1 }"
+                >
+                  <td class="col-date">{{ row.date }}</td>
+                  <td class="col-count">{{ row.issue_count }}</td>
+                  <td class="col-count">{{ row.fix_count }}</td>
+                  <td class="col-size">{{ row.size }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="form-card maintenance-form-card">
           <van-cell-group inset>
             <van-field
               v-model="maintenanceDate"
               label="截止日期"
               readonly
               clickable
-              placeholder="请选择截止日期"
+              placeholder="截止日之前（含）"
               @click="maintenanceDatePicker = true"
             >
               <template #right-icon>
@@ -872,7 +1663,7 @@ const handleSubmit = async () => {
             />
           </van-cell-group>
 
-          <div class="submit-wrapper">
+          <div class="submit-wrapper maintenance-submit-wrapper">
             <van-button
               block
               round
@@ -893,6 +1684,7 @@ const handleSubmit = async () => {
       </template>
     </div>
 
+    <!-- ============ CALENDARS ============ -->
     <van-calendar
       v-model:show="showCalendar"
       color="#3b82f6"
@@ -929,6 +1721,16 @@ const handleSubmit = async () => {
       @cancel="maintenanceDatePicker = false"
     />
 
+    <van-calendar
+      v-model:show="assignmentDatePicker"
+      color="#3b82f6"
+      :show-confirm="true"
+      :min-date="new Date(2020, 0, 1)"
+      @confirm="onAssignmentDateConfirm"
+      @cancel="assignmentDatePicker = false"
+    />
+
+    <!-- ============ PICKERS ============ -->
     <van-popup
       v-model:show="showStorePicker"
       position="bottom"
@@ -951,6 +1753,31 @@ const handleSubmit = async () => {
         @update:model-value="(v) => (selectedStore = (v && v[0]) ?? '')"
         @confirm="onStoreConfirm"
         @cancel="showStorePicker = false"
+      />
+    </van-popup>
+
+    <van-popup
+      v-model:show="showIssueOwnerPicker"
+      position="bottom"
+      round
+      teleport="body"
+      class="store-picker-popup"
+      :style="{ height: '50%' }"
+      @wheel.prevent="handleIssueOwnerPickerWheel"
+    >
+      <van-picker
+        v-if="showIssueOwnerPicker"
+        ref="issueOwnerPickerRef"
+        :model-value="[issueOwner]"
+        :columns="issueOwnerColumns"
+        title="选择责任部门"
+        :item-height="44"
+        :visible-option-num="5"
+        :swipe-duration="800"
+        allow-force-render
+        @update:model-value="(v) => (issueOwner = (v && v[0]) ?? '')"
+        @confirm="onIssueOwnerConfirm"
+        @cancel="showIssueOwnerPicker = false"
       />
     </van-popup>
 
@@ -979,6 +1806,28 @@ const handleSubmit = async () => {
     </van-popup>
 
     <van-popup
+      v-model:show="rectificationOwnerPicker"
+      position="bottom"
+      round
+      teleport="body"
+      class="store-picker-popup"
+      :style="{ height: '50%' }"
+    >
+      <van-picker
+        :model-value="[rectificationOwner]"
+        :columns="issueOwnerColumnsFiltered"
+        title="选择责任部门"
+        :item-height="44"
+        :visible-option-num="5"
+        :swipe-duration="800"
+        allow-force-render
+        @update:model-value="(v) => (rectificationOwner = (v && v[0]) ?? '')"
+        @confirm="onRectificationOwnerConfirm"
+        @cancel="rectificationOwnerPicker = false"
+      />
+    </van-popup>
+
+    <van-popup
       v-model:show="trackingStatusPicker"
       position="bottom"
       round
@@ -987,14 +1836,14 @@ const handleSubmit = async () => {
       :style="{ height: '40%' }"
     >
       <van-picker
-        :model-value="[trackingStatus]"
+        :model-value="[trackingStatusDisplay]"
         :columns="statusColumns"
         title="选择问题状态"
         :item-height="44"
         :visible-option-num="5"
         :swipe-duration="800"
         allow-force-render
-        @update:model-value="(v) => (trackingStatus = (v && v[0]) ?? '')"
+        @update:model-value="(v) => (trackingStatusDisplay = (v && v[0]) ?? '')"
         @confirm="onTrackingStatusConfirm"
         @cancel="trackingStatusPicker = false"
       />
@@ -1022,6 +1871,29 @@ const handleSubmit = async () => {
       />
     </van-popup>
 
+    <!-- Tracking Owner Picker -->
+    <van-popup
+      v-model:show="trackingOwnerPicker"
+      position="bottom"
+      round
+      teleport="body"
+      class="store-picker-popup"
+      :style="{ height: '50%' }"
+    >
+      <van-picker
+        :model-value="[trackingOwnerDisplay]"
+        :columns="issueOwnerColumnsForTracking"
+        title="选择责任部门"
+        :item-height="44"
+        :visible-option-num="5"
+        :swipe-duration="800"
+        allow-force-render
+        @update:model-value="(v) => (trackingOwnerDisplay = (v && v[0]) ?? '')"
+        @confirm="onTrackingOwnerConfirm"
+        @cancel="trackingOwnerPicker = false"
+      />
+    </van-popup>
+
     <van-popup
       v-model:show="maintenanceStatusPicker"
       position="bottom"
@@ -1043,25 +1915,57 @@ const handleSubmit = async () => {
         @cancel="maintenanceStatusPicker = false"
       />
     </van-popup>
+
+    <!-- Assignment Owner Picker (for all cards) -->
+    <van-popup
+      v-model:show="assignmentOwnerPicker"
+      position="bottom"
+      round
+      teleport="body"
+      class="store-picker-popup"
+      :style="{ height: '50%' }"
+    >
+      <van-picker
+        :model-value="currentAssigningIssue ? [assignmentCache[currentAssigningIssue] || ''] : ['']"
+        :columns="issueOwnerColumnsFiltered"
+        title="选择责任部门"
+        :item-height="44"
+        :visible-option-num="5"
+        :swipe-duration="800"
+        allow-force-render
+        @update:model-value="(v) => { if (currentAssigningIssue) { handleAssignmentOwnerChange(currentAssigningIssue, (v && v[0]) || '') } }"
+        @confirm="() => { assignmentOwnerPicker = false; currentAssigningIssue = null }"
+        @cancel="() => { assignmentOwnerPicker = false; currentAssigningIssue = null }"
+      />
+    </van-popup>
   </div>
 </template>
 
-<script lang="ts">
-export default {
-  data() {
-    return {
-      xy: { x: 20, y: 20 } as { x: number; y: number }
-    }
-  }
+<style>
+/* Global Overflow Lockdown - apply to all elements */
+html, body {
+  overflow-x: hidden !important;
+  max-width: 100vw;
 }
-</script>
+
+#app {
+  overflow-x: hidden !important;
+  max-width: 100vw;
+}
+</style>
 
 <style scoped>
+* {
+  box-sizing: border-box;
+}
+
 .page {
   min-height: 100dvh;
   background: #f5f7fa;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 .page-body {
@@ -1071,6 +1975,7 @@ export default {
   max-width: 640px;
   margin: 0 auto;
   width: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -1147,16 +2052,19 @@ export default {
   color: #9ca3af;
 }
 
-.uploader-row {
-  display: flex;
-  align-items: center;
-  padding: 12px 16px 16px;
+/* Uploader wrapper - removed margin to align with inputs */
+.uploader-wrapper {
+  /* margin-left removed */
 }
 
-.uploader-label {
-  width: 70px;
-  font-size: 14px;
-  color: #323233;
+/* Target van-uploader inside van-field for precise alignment */
+.uploader-wrapper :deep(.van-field__value) {
+  padding-left: 0;
+}
+
+/* Alternative: add padding to the uploader container itself */
+.uploader-wrapper :deep(.van-uploader) {
+  padding-left: 12px;
 }
 
 .submit-wrapper {
@@ -1254,7 +2162,7 @@ export default {
   position: fixed !important;
   bottom: 30px !important;
   right: 20px !important;
-  z-index: 9999 !important;
+  z-index: 100 !important;
   width: 130px !important;
   height: 48px !important;
   border-radius: 24px !important;
@@ -1273,6 +2181,27 @@ export default {
 
 .custom-fab:active {
   transform: scale(0.95);
+}
+
+.fab-button {
+  position: fixed !important;
+  bottom: 30px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 9999 !important;
+  width: 200px !important;
+  height: 48px !important;
+  border-radius: 24px !important;
+  background: rgba(2, 44, 72, 0.4) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  color: white !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+}
+
+.fab-button[disabled] {
+  background: rgb(200, 200, 200) !important;
 }
 
 .btn-press-effect {
@@ -1300,39 +2229,215 @@ export default {
 
 .issues-list {
   margin-top: 16px;
-  padding: 0 12px 80px;
+  padding: 0 12px 100px;
   position: relative;
 }
 
 .issue-card {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   transition: background-color 0.3s ease;
-  border-bottom: 1px solid #eeeeee;
+  border-bottom: 1px solid #bbbbbb;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box !important;
 }
 
+/* Dynamic Card Backgrounds */
 .issue-ready {
   background-color: #d4edda !important;
 }
 
-.issue-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Rectification: comments changed - light orange */
+.issue-comments-changed {
+  background-color: #fff3e0 !important;
+}
+
+/* Rectification: fix photo uploaded - light green */
+.issue-fixed-photo {
+  background-color: #e8f5e9 !important;
+}
+
+/* Assignment: owner selected - light green */
+.issue-assigned {
+  background-color: #f0f9eb !important;
+}
+
+/* Card Header - Date Row */
+.issue-header-row {
+  display: block;
+  margin-bottom: 6px;
+  text-align: left;
 }
 
 .issue-date {
   font-weight: 500;
   color: #555;
   font-size: 12px;
+  text-align: left;
+  display: block;
+}
+
+/* Card Header - Tags Row with flex-wrap */
+.issue-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-owner-badge,
+.issue-store {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #e6f1fe;
+  border-radius: 4px;
+  color: #333;
+  white-space: nowrap;
+}
+
+/* Store sector tag - light pink (#ffe4e1) */
+.issue-sector-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #ffe4e1;
+  border-radius: 4px;
+  color: #333;
+  white-space: nowrap;
+}
+
+/* Store sector field - inherits van-field styling for alignment */
+.store-sector-field {
+  padding: 10px 16px !important;
+}
+
+.store-sector-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #323233 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.store-sector-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Store sector grid - 2x2 layout */
+.store-sector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 24px;
+  width: 100%;
+}
+
+/* Food safety field - red label for alignment */
+.food-safety-field {
+  padding: 10px 16px !important;
+}
+
+.food-safety-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #ee0a24 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.food-safety-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Food safety radio group - horizontal layout */
+.food-safety-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+/* Food safety radio - all options in black */
+.food-safety-radio-group :deep(.van-radio__label) {
+  color: #323233 !important;
+}
+
+/* Food safety radio - second radio (相关) checked state in red on submission page */
+.food-safety-radio-group :deep(.van-radio:nth-child(2).van-radio--checked .van-radio__icon) {
+  background-color: #ee0a24 !important;
+  border-color: #ee0a24 !important;
+}
+
+/* Food safety filter on tracking page - second radio (相关) checked state in red */
+.food-safety-filter-field .food-safety-radio-group :deep(.van-radio:nth-child(2).van-radio--checked .van-radio__icon) {
+  background-color: #ee0a24 !important;
+  border-color: #ee0a24 !important;
+}
+
+/* Food safety filter field - red label for tracking page */
+.food-safety-filter-field {
+  padding: 10px 16px !important;
+}
+
+.food-safety-filter-field :deep(.van-field__label) {
+  flex: none;
+  width: 6.5em;
+  margin-right: 12px;
+  color: #ee0a24 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.food-safety-filter-field :deep(.van-field__value) {
+  text-align: left;
+}
+
+/* Food safety tag - red background for display */
+.issue-food-safety-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #ee0a24;
+  border-radius: 4px;
+  color: white;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* Rectification store sector grid - 3-row layout */
+.rectification-store-sector-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Row 1: 全部 - full width */
+.rectification-store-sector-grid .sector-row-full {
+  display: flex;
+  align-items: center;
+}
+
+/* Rows 2 & 3: Two columns */
+.rectification-store-sector-grid .sector-row-two {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.store-sector-col {
+  display: flex;
+  align-items: center;
 }
 
 .issue-desc-text {
-  margin-top: 4px;
+  margin-top: 8px;
+  margin-right: 8px;
   color: #333;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
   text-align: left;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .issue-photo {
@@ -1350,9 +2455,51 @@ export default {
   gap: 8px;
 }
 
+.rectification-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fix-comments-field {
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 4px;
+}
+
+.assignment-owner-select {
+  margin-top: 8px;
+}
+
+.assignment-field {
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.selected-owner {
+  color: #4caf50;
+  font-weight: 600;
+}
+
 .thumbnail-wrapper {
   position: relative;
   display: inline-block;
+  width: 60px;
+  height: 60px;
+}
+
+/* Food safety tag on thumbnail - positioned at bottom of thumbnail */
+.thumbnail-wrapper .issue-food-safety-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  font-size: 10px;
+  padding: 1px 4px;
+  background: #ee0a24;
+  border-radius: 2px;
+  color: white;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .fix-photo-preview {
@@ -1384,5 +2531,184 @@ export default {
   .submit-wrapper {
     margin-inline: 24px;
   }
+}
+
+/* ============ DISK ANALYTICS STYLES ============ */
+
+/* Section A: Disk Summary Card */
+.disk-summary-card {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  color: white;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.disk-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.disk-summary-title {
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.disk-refresh-icon {
+  font-size: 18px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: transform 0.3s ease;
+}
+
+.disk-refresh-icon:active {
+  transform: rotate(180deg);
+}
+
+.disk-summary-content {
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  padding-top: 8px;
+}
+
+.disk-summary-line {
+  display: flex;
+  align-items: center;
+}
+
+.disk-summary-text {
+  font-size: 14px;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.disk-summary-text strong {
+  font-weight: 700;
+}
+
+.disk-summary-loading {
+  padding: 8px 0;
+  font-size: 13px;
+  opacity: 0.8;
+  text-align: center;
+}
+
+/* Section B: Daily Analytics Table */
+.disk-table-section {
+  margin-top: 12px;
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.disk-table-header {
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.disk-table-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.disk-table-container {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.disk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.disk-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.disk-table th {
+  background: #f1f3f5;
+  color: #495057;
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.disk-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e9ecef;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.disk-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Zebra stripes */
+.disk-table tbody tr.row-odd {
+  background-color: #f8f9fa;
+}
+
+.disk-table tbody tr:hover {
+  background-color: #e7f5ff;
+}
+
+/* Column alignment */
+.col-date {
+  text-align: left !important;
+}
+
+.col-count {
+  text-align: center !important;
+}
+
+.col-size {
+  text-align: right !important;
+}
+
+/* ============ MAINTENANCE PAGE LAYOUT ============ */
+
+/* Full-width maintenance form card - matches disk summary card width */
+.maintenance-form-card {
+  margin-top: 12px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Make van-cell-group inset match the disk summary card styling */
+.maintenance-form-card :deep(.van-cell-group--inset) {
+  margin: 0;
+  border-radius: 0;
+}
+
+/* Full-width submit button for maintenance page */
+.maintenance-submit-wrapper {
+  margin: 20px 0 0;
+  padding: 0 16px;
+}
+
+/* Remove frames/borders from datepicker and status selector in maintenance */
+.maintenance-form-card :deep(.van-field) {
+  background: white;
+}
+
+.maintenance-form-card :deep(.van-field::after) {
+  display: none;
 }
 </style>
