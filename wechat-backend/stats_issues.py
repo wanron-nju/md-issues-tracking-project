@@ -28,12 +28,8 @@ from db import DATABASE_URL
 
 # Define the grouping order
 NON_STORE_OWNERS = [
-    '采购非食组',
-    '采购农副组',
-    '采购食品组',
-    '品类组',
-    '生鲜部（除水果组外）',
-    '生鲜部（水果组）',
+    '采购部',
+    '生鲜部',
     '联营绿洁',
     '营运部',
     '财务部',
@@ -108,11 +104,11 @@ def get_stats(
 
     # Initialize non-store owners
     for owner in non_store_owners:
-        stats[owner] = {'total': 0, 'resolved': 0, 'food_safety': 0}
+        stats[owner] = {'total': 0, 'resolved': 0, 'food_safety': 0, 'food_safety_resolved': 0}
 
     # Initialize store groups
     for store in store_groups:
-        stats[store] = {'total': 0, 'resolved': 0, 'food_safety': 0}
+        stats[store] = {'total': 0, 'resolved': 0, 'food_safety': 0, 'food_safety_resolved': 0}
 
     # Count issues for each group
     for issue in issues:
@@ -125,6 +121,8 @@ def get_stats(
                     stats[owner]['resolved'] += 1
                 if issue.is_food_safety:
                     stats[owner]['food_safety'] += 1
+                    if issue.status == 'completed':
+                        stats[owner]['food_safety_resolved'] += 1
         else:
             # 门店 issue - group by store name
             store = issue.store
@@ -134,6 +132,8 @@ def get_stats(
                     stats[store]['resolved'] += 1
                 if issue.is_food_safety:
                     stats[store]['food_safety'] += 1
+                    if issue.status == 'completed':
+                        stats[store]['food_safety_resolved'] += 1
 
     # Convert to list format with resolve rate
     results = []
@@ -141,14 +141,19 @@ def get_stats(
         total = counts['total']
         resolved = counts['resolved']
         food_safety = counts['food_safety']
+        food_safety_resolved = counts['food_safety_resolved']
         resolve_rate = (resolved / total * 100) if total > 0 else 0.0
+        food_safety_resolve_rate = (food_safety_resolved / food_safety * 100) if food_safety > 0 else 0.0
         results.append({
             'group': group_name,
             'total': total,
             'resolved': resolved,
             'unresolved': total - resolved,
             'food_safety': food_safety,
+            'food_safety_resolved': food_safety_resolved,
+            'food_safety_unresolved': food_safety - food_safety_resolved,
             'resolve_rate': resolve_rate,
+            'food_safety_resolve_rate': food_safety_resolve_rate,
         })
 
     return results
@@ -177,23 +182,23 @@ def sort_and_print_stats(
     store_stats.sort(key=lambda x: x['resolve_rate'], reverse=True)
 
     # Print header
-    print("=" * 105)
-    print(f"{'分组':<20} {'总问题数':>10} {'已整改':>10} {'待整改':>10} {'食安相关':>10} {'整改率':>12}")
-    print("=" * 105)
+    print("=" * 145)
+    print(f"{'分组':<20} {'总问题数':>8} {'已整改':>8} {'待整改':>8} {'整改率':>10} {'食安相关问题数':>14} {'食安已整改':>10} {'食安待整改':>10} {'食安整改率':>12}")
+    print("=" * 145)
 
     # Print non-门店 owners first
     for s in non_store_stats:
-        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['food_safety']:>10} {s['resolve_rate']:>11.2f}%")
+        print(f"{s['group']:<20} {s['total']:>8} {s['resolved']:>8} {s['unresolved']:>8} {s['resolve_rate']:>9.2f}% {s['food_safety']:>14} {s['food_safety_resolved']:>10} {s['food_safety_unresolved']:>10} {s['food_safety_resolve_rate']:>11.2f}%")
 
     # Separator between sections
     if non_store_stats and store_stats:
-        print("-" * 105)
+        print("-" * 145)
 
     # Print 门店 stores
     for s in store_stats:
-        print(f"{s['group']:<20} {s['total']:>10} {s['resolved']:>10} {s['unresolved']:>10} {s['food_safety']:>10} {s['resolve_rate']:>11.2f}%")
+        print(f"{s['group']:<20} {s['total']:>8} {s['resolved']:>8} {s['unresolved']:>8} {s['resolve_rate']:>9.2f}% {s['food_safety']:>14} {s['food_safety_resolved']:>10} {s['food_safety_unresolved']:>10} {s['food_safety_resolve_rate']:>11.2f}%")
 
-    print("=" * 105)
+    print("=" * 145)
 
 
 def parse_date(date_str: str) -> datetime:

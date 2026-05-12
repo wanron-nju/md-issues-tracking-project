@@ -98,12 +98,8 @@ const ISSUE_OWNER_UNASSIGNED = '<由营运组分派>'
 
 const ISSUE_OWNERS: string[] = [
   '门店',
-  '采购非食组',
-  '采购农副组',
-  '采购食品组',
-  '品类组',
-  '生鲜部（除水果组外）',
-  '生鲜部（水果组）',
+  '采购部',
+  '生鲜部',
   '联营绿洁',
   '营运部',
   '财务部',
@@ -111,6 +107,7 @@ const ISSUE_OWNERS: string[] = [
   '企划部',
   '信息部',
   '人事部',
+  '配送中心',
 ]
 
 // Full list with unassigned (for submission page)
