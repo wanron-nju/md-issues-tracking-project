@@ -65,6 +65,7 @@ STORES: list[str] = [
     "1007 - 电力店",
     "1017 - 政务店",
     "1067 - 恒立店",
+    "6001 - 配送中心",
 ]
 
 # Unassigned owner placeholder
@@ -447,12 +448,9 @@ def get_pending_issues_by_store(
         store_prefix = store.split(" - ")[0] if " - " in store else store
         query = query.filter(Issue.store.like(f"{store_prefix}%"))
     
-    # Required owner filter (must be provided)
+    # Optional owner filter - only filter if provided
     if owner and owner.strip():
         query = query.filter(Issue.issue_owner == owner.strip())
-    else:
-        # If no owner filter, return empty or could raise error
-        raise HTTPException(status_code=400, detail="owner parameter is required")
     
     # Optional store_sector filter - only filter if owner is '门店' AND store_sector is provided
     # If store_sector is not provided or is empty, return all sectors (no filtering)

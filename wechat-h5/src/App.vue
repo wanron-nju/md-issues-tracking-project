@@ -69,6 +69,7 @@ const STORES: string[] = [
   '1007 - 电力店',
   '1017 - 政务店',
   '1067 - 恒立店',
+  '6001 - 配送中心',
 ]
 
 const trackingStoreColumns = [
@@ -116,8 +117,16 @@ const issueOwnerColumns = [
   ...ISSUE_OWNERS.map((s) => ({ text: s, value: s })),
 ]
 
-// Filtered list without unassigned (for rectification and assignment pages)
-const issueOwnerColumnsFiltered = ISSUE_OWNERS.map((s) => ({ text: s, value: s }))
+const OWNER_EMPTY_LABEL = '请选择责任部门（可留空）'
+
+// Filtered list with clearable option (for rectification page)
+const issueOwnerColumnsFiltered = [
+  { text: OWNER_EMPTY_LABEL, value: ISSUE_OWNER_EMPTY },
+  ...ISSUE_OWNERS.map((s) => ({ text: s, value: s })),
+]
+
+// Filtered list without unassigned (for assignment page)
+const issueOwnerColumnsForAssignment = ISSUE_OWNERS.map((s) => ({ text: s, value: s }))
 
 // Map Chinese status to English for backend
 const statusMap: Record<string, string> = {
@@ -159,9 +168,9 @@ const rectifiedCache = ref<Record<number, { file?: any; comments?: string; origi
 const isLoadingRectification = ref(false)
 const isSubmittingRectification = ref(false)
 
-// Rectification filter validation - both store AND owner required
+// Rectification filter validation - EITHER store OR owner required
 const isRectificationFilterValid = computed(() => {
-  return rectificationStore.value && rectificationOwner.value
+  return !!(rectificationStore.value || rectificationOwner.value)
 })
 
 // Store Sector visibility: show when owner is '门店' AND a specific store is selected
@@ -507,16 +516,13 @@ const handleRectificationPickerWheel = (event: WheelEvent) => {
 }
 
 const fetchPendingIssues = async () => {
-  if (!rectificationOwner.value) {
-    showToast('请先选择责任部门')
-    return
-  }
-  
   isLoadingRectification.value = true
   try {
     const params: any = {}
-    // Add owner filter (required)
-    params.owner = rectificationOwner.value
+    // Add owner filter only if selected (optional)
+    if (rectificationOwner.value) {
+      params.owner = rectificationOwner.value
+    }
     
     // Add store filter only if selected (optional)
     if (rectificationStore.value) {
@@ -1245,7 +1251,7 @@ const refreshDiskStats = () => {
               readonly
               is-link
               clickable
-              placeholder="请选择责任部门"
+              placeholder="请选择责任部门（可留空）"
               @click="rectificationOwnerPicker = true"
             />
 
@@ -1291,7 +1297,7 @@ const refreshDiskStats = () => {
               round
               class="btn-submit btn-blue"
               :loading="isLoadingRectification"
-              :disabled="!rectificationOwner"
+              :disabled="!isRectificationFilterValid"
               @click="fetchPendingIssues"
             >
               获取待整改问题
@@ -1924,7 +1930,7 @@ const refreshDiskStats = () => {
     >
       <van-picker
         :model-value="currentAssigningIssue ? [assignmentCache[currentAssigningIssue] || ''] : ['']"
-        :columns="issueOwnerColumnsFiltered"
+        :columns="issueOwnerColumnsForAssignment"
         title="选择责任部门"
         :item-height="44"
         :visible-option-num="5"
